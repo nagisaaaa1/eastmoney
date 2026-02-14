@@ -11,3 +11,4 @@ __pycache__/
 funds.db
 config/__pycache__/settings.cpython-311.pyc
 funds.db
+qwen-key.txt
