@@ -200,7 +200,9 @@ class OpenAIClient(BaseLLMClient):
     def __init__(self):
         api_key = os.getenv("OPENAI_API_KEY")
         base_url = os.getenv("OPENAI_BASE_URL")
-        model = os.getenv("OPENAI_MODEL", "gpt-4o")
+        raw_provider = (os.getenv("LLM_PROVIDER", "") or "").strip().lower()
+        default_model = "qwen-plus" if raw_provider in {"qwen", "dashscope"} else "gpt-4o"
+        model = os.getenv("OPENAI_MODEL", default_model)
 
         if not api_key:
             raise ValueError("OPENAI_API_KEY is not set in environment variables.")
@@ -292,11 +294,23 @@ class OpenAIClient(BaseLLMClient):
                 finish_reason="stop"
             )
 
+def normalize_llm_provider(provider: Optional[str]) -> str:
+    """
+    Normalize provider aliases to internal provider names.
+    """
+    value = (provider or "gemini").strip().lower()
+    alias_map = {
+        "qwen": "openai_compatible",
+        "dashscope": "openai_compatible",
+        "openai-compatible": "openai_compatible",
+    }
+    return alias_map.get(value, value)
+
 def get_llm_client() -> BaseLLMClient:
     """
     Factory function to return the configured LLM client.
     """
-    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
+    provider = normalize_llm_provider(os.getenv("LLM_PROVIDER", "gemini"))
     
     if provider == "gemini":
         return GoogleGeminiClient()

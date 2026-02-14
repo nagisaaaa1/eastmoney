@@ -14,7 +14,7 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
 
-from src.llm.client import get_llm_client, ChatResponse, ToolCall
+from src.llm.client import get_llm_client, ChatResponse, ToolCall, normalize_llm_provider
 from src.llm.tools.schemas import get_tools_for_llm
 from src.llm.tools.executor import tool_executor
 from src.services.news_service import news_service
@@ -213,7 +213,7 @@ class AssistantService:
             Tuple of (response_text, tools_used_list)
         """
         llm = self._get_llm_client()
-        provider = os.getenv("LLM_PROVIDER", "gemini").lower()
+        provider = normalize_llm_provider(os.getenv("LLM_PROVIDER", "gemini"))
 
         # Build initial messages
         messages = self._build_messages(message, context, history)

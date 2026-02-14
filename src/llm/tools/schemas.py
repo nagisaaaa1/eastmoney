@@ -278,7 +278,11 @@ def get_tools_for_llm(provider: str = "openai") -> List[Dict[str, Any]]:
     Returns:
         List of tool definitions in provider-specific format
     """
-    if provider == "openai" or provider == "openai_compatible":
+    normalized_provider = (provider or "openai").strip().lower()
+    if normalized_provider in {"qwen", "dashscope", "openai-compatible"}:
+        normalized_provider = "openai_compatible"
+
+    if normalized_provider == "openai" or normalized_provider == "openai_compatible":
         # OpenAI function calling format
         return [
             {
@@ -291,7 +295,7 @@ def get_tools_for_llm(provider: str = "openai") -> List[Dict[str, Any]]:
             }
             for name, schema in TOOL_SCHEMAS.items()
         ]
-    elif provider == "gemini":
+    elif normalized_provider == "gemini":
         # Google Gemini function declarations format
         return [
             {

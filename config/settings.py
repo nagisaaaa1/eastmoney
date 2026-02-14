@@ -9,11 +9,15 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
 # LLM Configuration
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()
+_QWEN_PROVIDER_ALIASES = {"qwen", "dashscope"}
 
 # OpenAI Config
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+OPENAI_MODEL = os.getenv(
+    "OPENAI_MODEL",
+    "qwen-plus" if LLM_PROVIDER in _QWEN_PROVIDER_ALIASES else "gpt-4o",
+)
 
 # Default Model Configuration
 # Using a high-reasoning model for analysis is recommended.

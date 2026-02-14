@@ -412,5 +412,25 @@ Docker 部署会自动挂载以下目录：
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Austin-Patrician/eastmoney&type=Date)](https://star-history.com/#Austin-Patrician/eastmoney&Date)
 
+---
 
+## Qwen (DashScope) Quick Setup
+
+See `docs/qwen_quickstart.txt` for full steps.
+
+Minimal backend run example (PowerShell):
+
+```powershell
+$env:LLM_PROVIDER="qwen"
+$env:OPENAI_API_KEY="your_dashscope_api_key"
+$env:OPENAI_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
+$env:OPENAI_MODEL="qwen-plus"
+py -3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Or use:
+
+```powershell
+.\scripts\run_backend_qwen.ps1 -ApiKey "your_dashscope_api_key"
+```
 
