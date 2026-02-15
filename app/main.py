@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.storage.db import init_db, get_stock_basic_count
+from src.storage.fund_research_db import ensure_fund_research_schema
 from src.scheduler.manager import scheduler_manager
 
 from app.routers import (
@@ -17,7 +18,7 @@ from app.routers import (
     sentiment_router, dashboard_router, widgets_router, news_router,
     recommendations_router, assistant_router, preferences_router,
     details_router, compare_router, alerts_router, admin_router,
-    generate_router, portfolios_router
+    generate_router, portfolios_router, fund_research_router
 )
 from app.static import setup_static_files
 
@@ -35,6 +36,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize database
     init_db()
+    ensure_fund_research_schema()
     print("[OK] Database initialized")
 
     # Check if stock_basic needs syncing
@@ -152,6 +154,9 @@ def create_app() -> FastAPI:
 
     # Portfolios (largest router, includes all portfolio-related endpoints)
     app.include_router(portfolios_router)
+
+    # Fund research workflow (candidate pool + scoring + recommendation)
+    app.include_router(fund_research_router)
 
     # Static files and SPA routing - MUST be last
     setup_static_files(app)

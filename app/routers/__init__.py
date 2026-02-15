@@ -20,6 +20,7 @@ from .alerts import router as alerts_router
 from .admin import router as admin_router
 from .generate import router as generate_router
 from .portfolios import router as portfolios_router
+from .fund_research import router as fund_research_router
 
 __all__ = [
     'health_router', 'auth_router', 'settings_router', 'funds_router',
@@ -27,5 +28,5 @@ __all__ = [
     'sentiment_router', 'dashboard_router', 'widgets_router', 'news_router',
     'recommendations_router', 'assistant_router', 'preferences_router',
     'details_router', 'compare_router', 'alerts_router', 'admin_router',
-    'generate_router', 'portfolios_router'
+    'generate_router', 'portfolios_router', 'fund_research_router'
 ]

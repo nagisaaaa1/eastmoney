@@ -12,9 +12,9 @@ from datetime import datetime
 
 from src.data_sources.tushare_client import (
     get_latest_trade_date,
-    format_date_yyyymmdd,
 )
-from src.storage.db import get_db_connection
+from src.data_sources.fund_data_provider import get_fallback_trade_date
+from src.storage.db import get_db_connection, get_latest_fund_factor_trade_date
 from ..factor_store.cache import factor_cache
 
 from .factors.performance import PerformanceFactors
@@ -60,7 +60,7 @@ class FundRecommendationEngine:
         if not trade_date:
             trade_date = get_latest_trade_date()
             if not trade_date:
-                trade_date = format_date_yyyymmdd()
+                trade_date = get_fallback_trade_date()
 
         trade_date_db = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}"
 
@@ -126,7 +126,7 @@ class FundRecommendationEngine:
         if not trade_date:
             trade_date = get_latest_trade_date()
             if not trade_date:
-                trade_date = format_date_yyyymmdd()
+                trade_date = get_fallback_trade_date()
 
         trade_date_db = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}"
         print(f"[FundEngine] Using trade_date_db={trade_date_db}")
@@ -141,10 +141,25 @@ class FundRecommendationEngine:
         )
         print(f"[FundEngine] Cache query took {time.time() - cache_start:.2f}s, found {len(cached_factors) if cached_factors else 0} funds")
 
-        # IMPORTANT: Do NOT compute on-demand - factors should be pre-computed by scheduled task
-        # If cache is empty, return empty list instead of blocking with real-time computation
         if not cached_factors:
-            print(f"[FundEngine] WARNING: No cached fund factors for {trade_date_db}. Please run factor computation task first.")
+            latest_db_date = get_latest_fund_factor_trade_date()
+            if latest_db_date and latest_db_date != trade_date_db:
+                print(f"[FundEngine] No factors for {trade_date_db}, trying latest cached date {latest_db_date}")
+                trade_date_db = latest_db_date
+                cached_factors = factor_cache.get_top_funds(
+                    trade_date_db,
+                    score_type=strategy,
+                    limit=top_n * 2,
+                    min_score=min_score
+                )
+
+        # Last resort for small tracked universe: compute on demand.
+        if not cached_factors:
+            print(f"[FundEngine] No cached factors found, computing tracked funds on demand for {trade_date}")
+            cached_factors = self._compute_on_demand(trade_date, strategy, limit=max(top_n * 3, 40))
+
+        if not cached_factors:
+            print(f"[FundEngine] WARNING: No fund factors available after fallback/on-demand for {trade_date_db}")
             return []
 
         recommendations = []
@@ -261,7 +276,7 @@ class FundRecommendationEngine:
         if not trade_date:
             trade_date = get_latest_trade_date()
             if not trade_date:
-                trade_date = format_date_yyyymmdd()
+                trade_date = get_fallback_trade_date()
 
         # Compute factors
         factors = self.compute_factors(fund_code, trade_date)

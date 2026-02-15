@@ -289,13 +289,14 @@ export default function PreferencesPage() {
                         </FormControl>
 
                         <TextField
-                            label="总投资金额（可选）"
+                            label="\u603b\u8d44\u91d1\uff08\u53ef\u9009\uff09"
                             type="number"
                             value={preferences.total_capital || ''}
                             onChange={(e) => updatePreference('total_capital', parseFloat(e.target.value) || undefined)}
                             InputProps={{
-                                endAdornment: <InputAdornment position="end">元</InputAdornment>
+                                endAdornment: <InputAdornment position="end">\u5143</InputAdornment>
                             }}
+                            helperText="\u4ec5\u7528\u4e8e\u9884\u7b97\u7ea6\u675f\uff1a\u53ef\u7528\u73b0\u91d1 = \u603b\u8d44\u91d1\uff08\u504f\u597d\uff09 - \u5f53\u524d\u6301\u4ed3\u5e02\u503c\uff08\u4e0d\u542b\u73b0\u91d1\uff09\uff1b\u6295\u8d44\u91d1\u989d\uff08\u603b\u6210\u672c\uff09\u7531\u4ea4\u6613\u8bb0\u5f55\u81ea\u52a8\u7d2f\u8ba1"
                             fullWidth
                         />
                     </Box>

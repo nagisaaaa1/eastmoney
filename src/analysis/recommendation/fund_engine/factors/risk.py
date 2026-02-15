@@ -13,10 +13,8 @@ import numpy as np
 from typing import Dict, Optional, List
 from datetime import datetime, timedelta
 
-from src.data_sources.tushare_client import (
-    get_fund_nav,
-    format_date_yyyymmdd,
-)
+from src.data_sources.tushare_client import format_date_yyyymmdd
+from src.data_sources.fund_data_provider import get_fund_nav_with_fallback
 
 
 class RiskFactors:
@@ -59,22 +57,17 @@ class RiskFactors:
                 datetime.strptime(trade_date, '%Y%m%d') - timedelta(days=400)
             )
 
-            # Convert fund code to TuShare format if needed
-            ts_code = cls._normalize_fund_code(fund_code)
-            nav_df = get_fund_nav(ts_code, start_date, end_date)
+            nav_df = get_fund_nav_with_fallback(fund_code, start_date, end_date)
 
             if nav_df is None or len(nav_df) < 20:
                 return factors
 
             # Sort by date ascending
-            nav_df = nav_df.sort_values('end_date' if 'end_date' in nav_df.columns else 'nav_date')
+            nav_df = nav_df.sort_values('nav_date')
 
             # Get NAV column
             nav_col = 'accum_nav' if 'accum_nav' in nav_df.columns else 'unit_nav'
             if nav_col not in nav_df.columns:
-                nav_col = 'nav' if 'nav' in nav_df.columns else None
-
-            if nav_col is None:
                 return factors
 
             navs = nav_df[nav_col].dropna()

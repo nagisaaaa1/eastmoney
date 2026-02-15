@@ -13,8 +13,11 @@ from datetime import datetime, timedelta
 
 from src.data_sources.tushare_client import (
     tushare_call_with_retry,
-    get_fund_nav,
     format_date_yyyymmdd,
+)
+from src.data_sources.fund_data_provider import (
+    get_fund_basic_snapshot,
+    get_fund_nav_with_fallback,
 )
 
 
@@ -49,38 +52,44 @@ class ManagerFactors:
             'fund_size': None,
         }
 
+        ts_code = cls._normalize_fund_code(fund_code)
+
+        # Snapshot fallback from AkShare (size/manager metadata).
         try:
-            ts_code = cls._normalize_fund_code(fund_code)
+            size_billion = get_fund_basic_snapshot(fund_code).get('fund_size_billion')
+            if size_billion is not None:
+                factors['fund_size'] = round(float(size_billion), 2)
+        except Exception:
+            pass
 
-            # Get fund manager info
-            manager_df = tushare_call_with_retry(
-                'fund_manager',
-                ts_code=ts_code
-            )
-
+        # TuShare manager tenure and size when available.
+        try:
+            manager_df = tushare_call_with_retry('fund_manager', ts_code=ts_code)
             if manager_df is not None and not manager_df.empty:
                 factors['manager_tenure_years'] = cls._compute_tenure(manager_df, trade_date)
+        except Exception as e:
+            print(f"Manager tenure fetch failed for {fund_code}: {e}")
 
-            # Get fund basic info for size
+        try:
             basic_df = tushare_call_with_retry(
                 'fund_daily',
                 ts_code=ts_code,
                 start_date=trade_date,
                 end_date=trade_date
             )
-
             if basic_df is not None and not basic_df.empty and 'total_nav' in basic_df.columns:
-                # total_nav is in yuan, convert to billion
                 total_nav = basic_df['total_nav'].iloc[0]
                 if pd.notna(total_nav):
-                    factors['fund_size'] = round(total_nav / 1e9, 2)
-
-            # Compute alpha and style consistency from NAV history
-            nav_factors = cls._compute_nav_based_factors(ts_code, trade_date)
-            factors.update(nav_factors)
-
+                    factors['fund_size'] = round(float(total_nav) / 1e9, 2)
         except Exception as e:
-            print(f"Error computing manager factors for {fund_code}: {e}")
+            print(f"Fund size fetch failed for {fund_code}: {e}")
+
+        # Compute alpha/style from NAV regardless of TuShare availability.
+        try:
+            nav_factors = cls._compute_nav_based_factors(fund_code, trade_date)
+            factors.update(nav_factors)
+        except Exception as e:
+            print(f"NAV-based manager factors failed for {fund_code}: {e}")
 
         return factors
 
@@ -115,8 +124,9 @@ class ManagerFactors:
                 if start_date is None:
                     continue
 
-                # Check if this manager is current
-                if end_date is None or (
+                # Check if this manager is current.
+                # TuShare often returns NaN for ongoing manager end_date.
+                if end_date is None or pd.isna(end_date) or (
                     pd.notna(end_date) and
                     datetime.strptime(str(end_date), '%Y%m%d') > current_trade
                 ):
@@ -131,7 +141,7 @@ class ManagerFactors:
             return None
 
     @classmethod
-    def _compute_nav_based_factors(cls, ts_code: str, trade_date: str) -> Dict:
+    def _compute_nav_based_factors(cls, fund_code: str, trade_date: str) -> Dict:
         """
         Compute alpha and style factors from NAV history.
 
@@ -151,13 +161,13 @@ class ManagerFactors:
                 datetime.strptime(trade_date, '%Y%m%d') - timedelta(days=730)
             )
 
-            nav_df = get_fund_nav(ts_code, start_date, end_date)
+            nav_df = get_fund_nav_with_fallback(fund_code, start_date, end_date)
 
             if nav_df is None or len(nav_df) < 100:
                 return factors
 
             # Sort and get NAV column
-            date_col = 'end_date' if 'end_date' in nav_df.columns else 'nav_date'
+            date_col = 'nav_date'
             nav_df = nav_df.sort_values(date_col)
 
             nav_col = 'accum_nav' if 'accum_nav' in nav_df.columns else 'unit_nav'

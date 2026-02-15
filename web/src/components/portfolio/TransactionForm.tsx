@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Dialog,
@@ -13,7 +13,11 @@ import {
   InputAdornment,
   Alert,
   Divider,
+  ToggleButtonGroup,
+  ToggleButton,
+  CircularProgress,
 } from '@mui/material';
+import { fetchFundNavAtDate } from '../../api';
 
 export interface TransactionFormData {
   asset_type: string;
@@ -57,6 +61,10 @@ export default function TransactionForm({
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [entryMode, setEntryMode] = useState<'shares' | 'amount'>(assetType === 'fund' ? 'amount' : 'shares');
+  const [amountInput, setAmountInput] = useState<number>(0);
+  const [navLoading, setNavLoading] = useState(false);
+  const [navHint, setNavHint] = useState('');
   const [formData, setFormData] = useState<TransactionFormData>({
     asset_type: assetType,
     asset_code: assetCode,
@@ -68,6 +76,10 @@ export default function TransactionForm({
     transaction_date: new Date().toISOString().slice(0, 10),
     notes: '',
   });
+
+  const supportsAmountMode = useMemo(() => (
+    formData.asset_type === 'fund' && ['buy', 'transfer_in'].includes(formData.transaction_type)
+  ), [formData.asset_type, formData.transaction_type]);
 
   // Reset form when dialog opens or asset props change
   useEffect(() => {
@@ -83,6 +95,9 @@ export default function TransactionForm({
         transaction_date: new Date().toISOString().slice(0, 10),
         notes: '',
       });
+      setEntryMode(assetType === 'fund' ? 'amount' : 'shares');
+      setAmountInput(0);
+      setNavHint('');
       setError('');
     }
   }, [open, assetCode, assetName, assetType]);
@@ -94,10 +109,90 @@ export default function TransactionForm({
     }));
   };
 
-  const totalAmount = formData.shares * formData.price;
+  useEffect(() => {
+    if (!supportsAmountMode && entryMode === 'amount') {
+      setEntryMode('shares');
+    }
+  }, [supportsAmountMode, entryMode]);
+
+  useEffect(() => {
+    if (!open || !supportsAmountMode || entryMode !== 'amount') {
+      setNavLoading(false);
+      if (!supportsAmountMode) {
+        setNavHint('');
+      }
+      return;
+    }
+
+    if (!formData.asset_code || !formData.transaction_date) {
+      setNavHint('');
+      return;
+    }
+
+    let cancelled = false;
+    setNavLoading(true);
+    setNavHint('');
+
+    fetchFundNavAtDate(formData.asset_code.trim(), formData.transaction_date)
+      .then((res) => {
+        if (cancelled) return;
+        setFormData((prev) => ({ ...prev, price: res.unit_nav }));
+        setNavHint(
+          res.is_exact
+            ? `已自动填充净值 ${res.unit_nav.toFixed(4)}（${res.nav_date}）`
+            : `该日无净值，已填最近净值 ${res.unit_nav.toFixed(4)}（${res.nav_date}）`
+        );
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setNavHint('未能自动获取净值，请手动输入成交价格');
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setNavLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    open,
+    supportsAmountMode,
+    entryMode,
+    formData.asset_code,
+    formData.transaction_date,
+  ]);
+
+  const computedShares = useMemo(() => {
+    if (entryMode !== 'amount') return formData.shares;
+    if (formData.price <= 0) return 0;
+    const netAmount = amountInput - (formData.fees || 0);
+    if (netAmount <= 0) return 0;
+    return netAmount / formData.price;
+  }, [entryMode, amountInput, formData.fees, formData.price, formData.shares]);
+
+  const totalAmount = entryMode === 'amount' ? amountInput : formData.shares * formData.price;
 
   const handleSubmit = async () => {
-    if (formData.shares <= 0) {
+    const sharesToSubmit = entryMode === 'amount' ? computedShares : formData.shares;
+
+    if (entryMode === 'amount') {
+      if (amountInput <= 0) {
+        setError('请输入有效的总金额');
+        return;
+      }
+      if ((formData.fees || 0) < 0) {
+        setError('手续费不能为负数');
+        return;
+      }
+      if (amountInput <= (formData.fees || 0)) {
+        setError('总金额必须大于手续费');
+        return;
+      }
+    }
+
+    if (sharesToSubmit <= 0) {
       setError(t('portfolio.error_shares'));
       return;
     }
@@ -119,6 +214,7 @@ export default function TransactionForm({
     try {
       await onSubmit({
         ...formData,
+        shares: sharesToSubmit,
         total_amount: totalAmount,
       });
       onClose();
@@ -193,6 +289,77 @@ export default function TransactionForm({
           ))}
         </TextField>
 
+        {supportsAmountMode && (
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1 }}>
+              录入方式
+            </Typography>
+            <ToggleButtonGroup
+              value={entryMode}
+              exclusive
+              onChange={(_, value) => {
+                if (value) setEntryMode(value);
+              }}
+              size="small"
+              sx={{ width: '100%' }}
+            >
+              <ToggleButton value="amount" sx={{ flex: 1 }}>
+                按金额
+              </ToggleButton>
+              <ToggleButton value="shares" sx={{ flex: 1 }}>
+                按份额
+              </ToggleButton>
+            </ToggleButtonGroup>
+          </Box>
+        )}
+
+        {entryMode === 'amount' ? (
+          <Box sx={{ mb: 2 }}>
+            <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
+              <TextField
+                label={t('portfolio.total_amount')}
+                type="number"
+                value={amountInput || ''}
+                onChange={(e) => setAmountInput(parseFloat(e.target.value) || 0)}
+                size="small"
+                fullWidth
+                slotProps={{
+                  input: {
+                    startAdornment: <InputAdornment position="start">¥</InputAdornment>,
+                  },
+                }}
+              />
+              <TextField
+                label={t('portfolio.price')}
+                type="number"
+                value={formData.price || ''}
+                onChange={(e) => handleChange('price', e.target.value)}
+                size="small"
+                fullWidth
+                slotProps={{
+                  input: {
+                    startAdornment: <InputAdornment position="start">¥</InputAdornment>,
+                    endAdornment: navLoading ? <CircularProgress size={16} /> : undefined,
+                  },
+                }}
+              />
+            </Box>
+            <TextField
+              label={t('portfolio.shares')}
+              type="number"
+              value={computedShares > 0 ? computedShares.toFixed(4) : ''}
+              size="small"
+              fullWidth
+              slotProps={{
+                input: {
+                  readOnly: true,
+                  endAdornment: <InputAdornment position="end">{t('portfolio.shares_unit')}</InputAdornment>,
+                },
+              }}
+              helperText={navHint || '份额 = (总金额 - 手续费) / 价格'}
+            />
+          </Box>
+        ) : (
         <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
           <TextField
             label={t('portfolio.shares')}
@@ -221,6 +388,7 @@ export default function TransactionForm({
             }}
           />
         </Box>
+        )}
 
         <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
           <TextField

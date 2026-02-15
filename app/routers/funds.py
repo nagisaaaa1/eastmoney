@@ -2,7 +2,7 @@
 Fund management endpoints.
 """
 import json
-from typing import List
+from typing import List, Dict, Any, Callable
 from fastapi import APIRouter, HTTPException, Depends
 
 from app.models.funds import FundItem, FundCompareRequest
@@ -230,9 +230,8 @@ async def compare_funds_advanced(
 import akshare as ak
 import time
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
 from datetime import datetime, timedelta
+from copy import deepcopy
 from dotenv import load_dotenv
 
 # ==================== Batch Estimation Cache ====================
@@ -247,20 +246,12 @@ load_dotenv()
 
 # TuShare for fund manager data
 try:
-    import tushare as ts
-    import os
-    TUSHARE_TOKEN = os.environ.get('TUSHARE_API_TOKEN', '')
-    if TUSHARE_TOKEN:
-        ts.set_token(TUSHARE_TOKEN)
-        TS_PRO = ts.pro_api()
-        print(f"TuShare initialized with token")
-    else:
-        TS_PRO = None
-        print("TUSHARE_API_TOKEN not configured. Fund manager data will be limited.")
-except ImportError:
-    ts = None
+    from src.data_sources.tushare_client import _get_tushare_pro
+    TS_PRO = _get_tushare_pro()
+    print("TuShare initialized with shared client")
+except Exception as e:
     TS_PRO = None
-    print("TuShare not installed. Fund manager data will be limited.")
+    print(f"TuShare unavailable. Fund manager data will be limited. ({e})")
 
 
 def _safe_float(val, default=0.0):
@@ -309,6 +300,95 @@ def _get_estimation_cache_ttl() -> int:
         return 60  # 1 minute during trading
     else:
         return 3600  # 1 hour after market close (use 15:00 data)
+
+
+# ==================== Fund Market Cache (SWR) ====================
+# Serve cached data immediately and refresh in background when stale.
+_market_cache_lock = threading.Lock()
+_market_cache_data: Dict[str, Dict[str, Any]] = {}
+_market_cache_timestamp: Dict[str, float] = {}
+_market_cache_refreshing: Dict[str, bool] = {}
+_MARKET_CACHE_TTL_SECONDS: Dict[str, int] = {
+    "market_indices": 180,      # 3 minutes
+    "market_sectors": 180,      # 3 minutes
+    "market_northbound": 300,   # 5 minutes
+    "market_sentiment": 180,    # 3 minutes
+}
+
+
+def _get_market_cache_snapshot(cache_key: str) -> tuple:
+    """Get cached payload and whether it is fresh."""
+    with _market_cache_lock:
+        payload = _market_cache_data.get(cache_key)
+        ts = _market_cache_timestamp.get(cache_key, 0.0)
+
+    if payload is None:
+        return None, False
+
+    ttl = _MARKET_CACHE_TTL_SECONDS.get(cache_key, 180)
+    is_fresh = (time.time() - ts) < ttl
+    return deepcopy(payload), is_fresh
+
+
+def _set_market_cache(cache_key: str, payload: Dict[str, Any]) -> None:
+    """Store market payload in cache."""
+    with _market_cache_lock:
+        _market_cache_data[cache_key] = deepcopy(payload)
+        _market_cache_timestamp[cache_key] = time.time()
+        _market_cache_refreshing[cache_key] = False
+
+
+def _try_start_market_refresh(cache_key: str) -> bool:
+    """Mark cache key as refreshing; return False if already refreshing."""
+    with _market_cache_lock:
+        if _market_cache_refreshing.get(cache_key, False):
+            return False
+        _market_cache_refreshing[cache_key] = True
+        return True
+
+
+def _finish_market_refresh(cache_key: str) -> None:
+    """Clear refreshing state."""
+    with _market_cache_lock:
+        _market_cache_refreshing[cache_key] = False
+
+
+async def _refresh_market_cache_background(
+    cache_key: str,
+    loader: Callable[[], Dict[str, Any]]
+) -> None:
+    """Refresh market cache in background."""
+    try:
+        data = await asyncio.to_thread(loader)
+        _set_market_cache(cache_key, data)
+    except Exception as e:
+        print(f"Background refresh failed for {cache_key}: {e}")
+    finally:
+        _finish_market_refresh(cache_key)
+
+
+async def _get_market_payload(
+    cache_key: str,
+    loader: Callable[[], Dict[str, Any]]
+) -> Dict[str, Any]:
+    """
+    Stale-while-revalidate cache strategy:
+    1) Fresh cache -> return immediately
+    2) Stale cache -> return immediately and refresh in background
+    3) No cache -> load synchronously and cache
+    """
+    cached, is_fresh = _get_market_cache_snapshot(cache_key)
+    if cached is not None and is_fresh:
+        return cached
+
+    if cached is not None:
+        if _try_start_market_refresh(cache_key):
+            asyncio.create_task(_refresh_market_cache_background(cache_key, loader))
+        return cached
+
+    data = await asyncio.to_thread(loader)
+    _set_market_cache(cache_key, data)
+    return data
 
 
 def _fetch_all_estimations() -> dict:
@@ -808,47 +888,178 @@ async def get_fund_manager_detail(
 
 # ==================== Market Overview Endpoints ====================
 
+# Column names (kept as unicode escapes to avoid encoding issues in source files)
+CN_CODE = "代码"
+CN_NAME = "名称"
+CN_LAST = "最新价"
+CN_CHG_PCT = "涨跌幅"
+CN_CHG_VAL = "涨跌额"
+CN_VOLUME = "成交量"
+CN_AMOUNT = "成交额"
+CN_HIGH = "最高"
+CN_LOW = "最低"
+CN_OPEN = "今开"
+CN_PREV_CLOSE = "昨收"
+
+SEC_NAME = "板块名称"
+SEC_CHG_PCT = "涨跌幅"
+SEC_TURNOVER = "换手率"
+SEC_LEADER = "领涨股票"
+SEC_LEADER_CHG = "领涨股票-涨跌幅"
+SEC_TOTAL_CAP = "总市值"
+
+
+def _load_market_indices_payload() -> Dict[str, Any]:
+    """Build market indices payload."""
+    df = ak.stock_zh_index_spot_em()
+    if df is None or df.empty:
+        return {'indices': [], 'timestamp': datetime.now().isoformat()}
+
+    major_codes = ['000001', '399001', '399006', '000688', '000300', '000016', '000905']
+    indices = []
+
+    for _, row in df.iterrows():
+        code = _safe_str(row.get(CN_CODE))
+        if code in major_codes:
+            indices.append({
+                'code': code,
+                'name': _safe_str(row.get(CN_NAME)),
+                'price': _safe_float(row.get(CN_LAST)),
+                'change_pct': _safe_float(row.get(CN_CHG_PCT)),
+                'change_val': _safe_float(row.get(CN_CHG_VAL)),
+                'volume': _safe_float(row.get(CN_VOLUME)),
+                'amount': _safe_float(row.get(CN_AMOUNT)),
+                'high': _safe_float(row.get(CN_HIGH)),
+                'low': _safe_float(row.get(CN_LOW)),
+                'open': _safe_float(row.get(CN_OPEN)),
+                'prev_close': _safe_float(row.get(CN_PREV_CLOSE)),
+            })
+
+    order = {c: i for i, c in enumerate(major_codes)}
+    indices.sort(key=lambda x: order.get(x['code'], 999))
+
+    return {
+        'indices': indices,
+        'timestamp': datetime.now().isoformat(),
+    }
+
+
+def _load_market_sectors_payload(limit: int = 10) -> Dict[str, Any]:
+    """Build sector ranking payload."""
+    df = ak.stock_board_industry_name_em()
+    if df is None or df.empty:
+        return {'top_gainers': [], 'top_losers': [], 'timestamp': datetime.now().isoformat()}
+
+    df[SEC_CHG_PCT] = pd.to_numeric(df[SEC_CHG_PCT], errors='coerce')
+    df_sorted = df.sort_values(SEC_CHG_PCT, ascending=False)
+
+    top_gainers = []
+    for _, row in df_sorted.head(limit).iterrows():
+        top_gainers.append({
+            'name': _safe_str(row.get(SEC_NAME)),
+            'change_pct': _safe_float(row.get(SEC_CHG_PCT)),
+            'turnover_rate': _safe_float(row.get(SEC_TURNOVER)),
+            'leading_stock': _safe_str(row.get(SEC_LEADER)),
+            'leading_change': _safe_float(row.get(SEC_LEADER_CHG)),
+            'total_amount': _safe_float(row.get(SEC_TOTAL_CAP)),
+        })
+
+    top_losers = []
+    for _, row in df_sorted.tail(limit).iloc[::-1].iterrows():
+        top_losers.append({
+            'name': _safe_str(row.get(SEC_NAME)),
+            'change_pct': _safe_float(row.get(SEC_CHG_PCT)),
+            'turnover_rate': _safe_float(row.get(SEC_TURNOVER)),
+            'leading_stock': _safe_str(row.get(SEC_LEADER)),
+            'leading_change': _safe_float(row.get(SEC_LEADER_CHG)),
+            'total_amount': _safe_float(row.get(SEC_TOTAL_CAP)),
+        })
+
+    return {
+        'top_gainers': top_gainers,
+        'top_losers': top_losers,
+        'timestamp': datetime.now().isoformat(),
+    }
+
+
+def _load_market_northbound_payload() -> Dict[str, Any]:
+    """Build northbound flow payload."""
+    try:
+        from src.data_sources.data_source_manager import _get_tushare_pro
+
+        pro = _get_tushare_pro()
+        if pro:
+            end_date = datetime.now().strftime('%Y%m%d')
+            start_date = (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')
+            df = pro.moneyflow_hsgt(start_date=start_date, end_date=end_date)
+
+            if df is not None and not df.empty:
+                df = df.sort_values('trade_date', ascending=False)
+                latest = df.iloc[0] if len(df) > 0 else None
+                recent = []
+                for _, row in df.head(10).iterrows():
+                    recent.append({
+                        'date': _safe_str(row.get('trade_date')),
+                        'north_money': _safe_float(row.get('north_money')),
+                        'south_money': _safe_float(row.get('south_money')),
+                        'hgt': _safe_float(row.get('hgt')),
+                        'sgt': _safe_float(row.get('sgt')),
+                    })
+
+                return {
+                    'today': {
+                        'north_money': _safe_float(latest.get('north_money')) if latest is not None else 0,
+                        'south_money': _safe_float(latest.get('south_money')) if latest is not None else 0,
+                        'hgt': _safe_float(latest.get('hgt')) if latest is not None else 0,
+                        'sgt': _safe_float(latest.get('sgt')) if latest is not None else 0,
+                    },
+                    'recent': recent,
+                    'timestamp': datetime.now().isoformat(),
+                }
+    except Exception as e:
+        print(f"TuShare northbound failed: {e}")
+
+    return {
+        'today': {'north_money': 0, 'south_money': 0, 'hgt': 0, 'sgt': 0},
+        'recent': [],
+        'timestamp': datetime.now().isoformat(),
+        'message': 'Northbound data unavailable',
+    }
+
+
+def _load_market_sentiment_payload() -> Dict[str, Any]:
+    """Build market sentiment payload."""
+    sentiment = {
+        'up_count': 0,
+        'down_count': 0,
+        'flat_count': 0,
+        'limit_up': 0,
+        'limit_down': 0,
+        'timestamp': datetime.now().isoformat(),
+    }
+
+    try:
+        df = ak.stock_zh_a_spot_em()
+        if df is not None and not df.empty:
+            df[CN_CHG_PCT] = pd.to_numeric(df[CN_CHG_PCT], errors='coerce')
+            sentiment['up_count'] = int((df[CN_CHG_PCT] > 0).sum())
+            sentiment['down_count'] = int((df[CN_CHG_PCT] < 0).sum())
+            sentiment['flat_count'] = int((df[CN_CHG_PCT] == 0).sum())
+            sentiment['limit_up'] = int((df[CN_CHG_PCT] >= 9.9).sum())
+            sentiment['limit_down'] = int((df[CN_CHG_PCT] <= -9.9).sum())
+    except Exception as e:
+        print(f"Error calculating sentiment: {e}")
+
+    return sentiment
+
+
 @router.get("/market/indices")
 async def get_market_indices(current_user: User = Depends(get_current_user)):
     """
-    Get major market indices (上证、深证、创业板、科创50等).
+    Get major market indices snapshot.
     """
     try:
-        loop = asyncio.get_running_loop()
-        df = await loop.run_in_executor(None, ak.stock_zh_index_spot_em)
-        
-        if df is None or df.empty:
-            return {'indices': [], 'timestamp': datetime.now().isoformat()}
-        
-        # Filter for major indices
-        major_codes = ['000001', '399001', '399006', '000688', '000300', '000016', '000905']
-        indices = []
-        
-        for _, row in df.iterrows():
-            code = _safe_str(row.get('代码'))
-            if code in major_codes:
-                indices.append({
-                    'code': code,
-                    'name': _safe_str(row.get('名称')),
-                    'price': _safe_float(row.get('最新价')),
-                    'change_pct': _safe_float(row.get('涨跌幅')),
-                    'change_val': _safe_float(row.get('涨跌额')),
-                    'volume': _safe_float(row.get('成交量')),
-                    'amount': _safe_float(row.get('成交额')),
-                    'high': _safe_float(row.get('最高')),
-                    'low': _safe_float(row.get('最低')),
-                    'open': _safe_float(row.get('今开')),
-                    'prev_close': _safe_float(row.get('昨收')),
-                })
-        
-        # Sort by predefined order
-        order = {c: i for i, c in enumerate(major_codes)}
-        indices.sort(key=lambda x: order.get(x['code'], 999))
-        
-        return {
-            'indices': indices,
-            'timestamp': datetime.now().isoformat(),
-        }
+        return await _get_market_payload("market_indices", _load_market_indices_payload)
     except Exception as e:
         print(f"Error fetching market indices: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -863,44 +1074,12 @@ async def get_market_sectors(
     Get industry sector performance ranking.
     """
     try:
-        loop = asyncio.get_running_loop()
-        df = await loop.run_in_executor(None, ak.stock_board_industry_name_em)
-        
-        if df is None or df.empty:
-            return {'sectors': [], 'timestamp': datetime.now().isoformat()}
-        
-        # Sort by change percentage
-        df['涨跌幅'] = pd.to_numeric(df['涨跌幅'], errors='coerce')
-        df_sorted = df.sort_values('涨跌幅', ascending=False)
-        
-        # Get top gainers and losers
-        top_gainers = []
-        for _, row in df_sorted.head(limit).iterrows():
-            top_gainers.append({
-                'name': _safe_str(row.get('板块名称')),
-                'change_pct': _safe_float(row.get('涨跌幅')),
-                'turnover_rate': _safe_float(row.get('换手率')),
-                'leading_stock': _safe_str(row.get('领涨股票')),
-                'leading_change': _safe_float(row.get('领涨股票-涨跌幅')),
-                'total_amount': _safe_float(row.get('总成交额')),
-            })
-        
-        top_losers = []
-        for _, row in df_sorted.tail(limit).iloc[::-1].iterrows():
-            top_losers.append({
-                'name': _safe_str(row.get('板块名称')),
-                'change_pct': _safe_float(row.get('涨跌幅')),
-                'turnover_rate': _safe_float(row.get('换手率')),
-                'leading_stock': _safe_str(row.get('领涨股票')),
-                'leading_change': _safe_float(row.get('领涨股票-涨跌幅')),
-                'total_amount': _safe_float(row.get('总成交额')),
-            })
-        
-        return {
-            'top_gainers': top_gainers,
-            'top_losers': top_losers,
-            'timestamp': datetime.now().isoformat(),
-        }
+        normalized_limit = max(1, min(limit, 20))
+        cache_key = f"market_sectors:{normalized_limit}"
+        return await _get_market_payload(
+            cache_key,
+            lambda: _load_market_sectors_payload(normalized_limit)
+        )
     except Exception as e:
         print(f"Error fetching market sectors: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -909,63 +1088,10 @@ async def get_market_sectors(
 @router.get("/market/northbound")
 async def get_northbound_flow(current_user: User = Depends(get_current_user)):
     """
-    Get northbound capital flow (沪深港通).
+    Get northbound capital flow (HGT/SGT).
     """
     try:
-        loop = asyncio.get_running_loop()
-        
-        # Try TuShare first for northbound data
-        try:
-            from src.data_sources.data_source_manager import _get_tushare_pro
-            pro = _get_tushare_pro()
-            if pro:
-                # Get recent trading dates
-                from datetime import timedelta
-                end_date = datetime.now().strftime('%Y%m%d')
-                start_date = (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')
-                
-                df = await loop.run_in_executor(
-                    None,
-                    lambda: pro.moneyflow_hsgt(start_date=start_date, end_date=end_date)
-                )
-                
-                if df is not None and not df.empty:
-                    df = df.sort_values('trade_date', ascending=False)
-                    
-                    # Today's data
-                    latest = df.iloc[0] if len(df) > 0 else None
-                    
-                    # Recent 5 days trend
-                    recent = []
-                    for _, row in df.head(10).iterrows():
-                        recent.append({
-                            'date': _safe_str(row.get('trade_date')),
-                            'north_money': _safe_float(row.get('north_money')),  # 北向资金
-                            'south_money': _safe_float(row.get('south_money')),  # 南向资金
-                            'hgt': _safe_float(row.get('hgt')),  # 沪股通
-                            'sgt': _safe_float(row.get('sgt')),  # 深股通
-                        })
-                    
-                    return {
-                        'today': {
-                            'north_money': _safe_float(latest.get('north_money')) if latest is not None else 0,
-                            'south_money': _safe_float(latest.get('south_money')) if latest is not None else 0,
-                            'hgt': _safe_float(latest.get('hgt')) if latest is not None else 0,
-                            'sgt': _safe_float(latest.get('sgt')) if latest is not None else 0,
-                        },
-                        'recent': recent,
-                        'timestamp': datetime.now().isoformat(),
-                    }
-        except Exception as e:
-            print(f"TuShare northbound failed: {e}")
-        
-        # Fallback: return empty data
-        return {
-            'today': {'north_money': 0, 'south_money': 0, 'hgt': 0, 'sgt': 0},
-            'recent': [],
-            'timestamp': datetime.now().isoformat(),
-            'message': 'Northbound data unavailable',
-        }
+        return await _get_market_payload("market_northbound", _load_market_northbound_payload)
     except Exception as e:
         print(f"Error fetching northbound flow: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -974,36 +1100,10 @@ async def get_northbound_flow(current_user: User = Depends(get_current_user)):
 @router.get("/market/sentiment")
 async def get_market_sentiment(current_user: User = Depends(get_current_user)):
     """
-    Get market sentiment indicators (涨跌家数、涨停跌停).
+    Get market sentiment indicators (up/down/limit-up/limit-down counts).
     """
     try:
-        loop = asyncio.get_running_loop()
-        
-        sentiment = {
-            'up_count': 0,
-            'down_count': 0,
-            'flat_count': 0,
-            'limit_up': 0,
-            'limit_down': 0,
-            'timestamp': datetime.now().isoformat(),
-        }
-        
-        try:
-            # Get stock spot data to calculate up/down counts
-            df = await loop.run_in_executor(None, ak.stock_zh_a_spot_em)
-            
-            if df is not None and not df.empty:
-                df['涨跌幅'] = pd.to_numeric(df['涨跌幅'], errors='coerce')
-                
-                sentiment['up_count'] = int((df['涨跌幅'] > 0).sum())
-                sentiment['down_count'] = int((df['涨跌幅'] < 0).sum())
-                sentiment['flat_count'] = int((df['涨跌幅'] == 0).sum())
-                sentiment['limit_up'] = int((df['涨跌幅'] >= 9.9).sum())
-                sentiment['limit_down'] = int((df['涨跌幅'] <= -9.9).sum())
-        except Exception as e:
-            print(f"Error calculating sentiment: {e}")
-        
-        return sentiment
+        return await _get_market_payload("market_sentiment", _load_market_sentiment_payload)
     except Exception as e:
         print(f"Error fetching market sentiment: {e}")
         raise HTTPException(status_code=500, detail=str(e))

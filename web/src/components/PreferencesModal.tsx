@@ -279,6 +279,7 @@ export default function PreferencesModal({ open, onClose, onSaved }: Preferences
                                         value={preferences.total_capital || ''}
                                         onChange={(e) => updatePreference('total_capital', parseFloat(e.target.value) || undefined)}
                                         InputProps={{ endAdornment: <InputAdornment position="end">{t('recommendations.preferences.capital_unit')}</InputAdornment> }}
+                                        helperText={t('recommendations.preferences.capital_formula')}
                                         sx={inputSx}
                                     />
                                 </Box>

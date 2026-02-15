@@ -84,7 +84,10 @@ const PortfolioHeader: React.FC<PortfolioHeaderProps> = ({
         {/* Total Value + Sparkline */}
         <Box>
           <Typography variant="body2" color="text.secondary" gutterBottom>
-            {t('portfolio.totalAssets', '总资产')}
+            {t('portfolio.totalAssets', '\u6301\u4ed3\u5e02\u503c\uff08\u4e0d\u542b\u73b0\u91d1\uff09')}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+            {t('portfolio.totalAssetsHint', '\u53e3\u5f84\uff1a\u5f53\u524d\u6301\u4ed3\u6309\u6700\u65b0\u4ef7\u683c\u4f30\u7b97\uff0c\u4e0d\u5305\u542b\u53ef\u7528\u73b0\u91d1')}
           </Typography>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
             <Box>
@@ -114,6 +117,9 @@ const PortfolioHeader: React.FC<PortfolioHeaderProps> = ({
                   ({totalPnlPct >= 0 ? '+' : ''}{totalPnlPct.toFixed(2)}%)
                 </Typography>
               </Box>
+              <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
+                {t('portfolio.pnlFormula', '\u6536\u76ca\u989d = \u6301\u4ed3\u5e02\u503c - \u6295\u5165\u6210\u672c\uff08\u7d2f\u8ba1\u4e70\u5165+\u8d39\u7528\uff09\uff1b\u6536\u76ca\u7387 = \u6536\u76ca\u989d \u00f7 \u6295\u5165\u6210\u672c')}
+              </Typography>
             </Box>
             {sparklineData && sparklineData.values.length > 1 && (
               <Box sx={{ width: 100, height: 50 }}>

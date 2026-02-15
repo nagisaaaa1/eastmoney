@@ -16,8 +16,8 @@ import pandas as pd
 
 from src.data_sources.tushare_client import (
     get_latest_trade_date,
-    format_date_yyyymmdd,
 )
+from src.data_sources.fund_data_provider import get_fallback_trade_date
 from src.storage.db import (
     get_db_connection,
     upsert_stock_factors,
@@ -321,7 +321,7 @@ class DailyFactorComputer:
         if not trade_date:
             trade_date = get_latest_trade_date()
             if not trade_date:
-                trade_date = format_date_yyyymmdd()
+                trade_date = get_fallback_trade_date()
 
         print(f"Starting stock factor computation for {trade_date}...")
 
@@ -413,7 +413,7 @@ class DailyFactorComputer:
         if not trade_date:
             trade_date = get_latest_trade_date()
             if not trade_date:
-                trade_date = format_date_yyyymmdd()
+                trade_date = get_fallback_trade_date()
 
         print(f"Starting fund factor computation for {trade_date} (universe={universe})...")
 
@@ -428,6 +428,12 @@ class DailyFactorComputer:
                     from src.data_sources.tushare_client import sync_fund_basic
                     sync_fund_basic()
                     all_codes = self._get_all_fund_codes(universe=universe)
+                    total = len(all_codes)
+
+                # Graceful fallback when market universe is not available.
+                if total == 0 and universe != "tracked":
+                    print(f"Universe {universe} is empty, falling back to tracked funds.")
+                    all_codes = self._get_all_fund_codes(universe="tracked")
                     total = len(all_codes)
 
             if total == 0:
@@ -520,8 +526,8 @@ def run_daily_computation():
     trade_date = get_latest_trade_date()
 
     if not trade_date:
-        print("Could not determine latest trade date, skipping computation")
-        return
+        trade_date = get_fallback_trade_date()
+        print(f"Could not determine latest trade date from TuShare, using fallback date {trade_date}")
 
     # Compute stock factors first
     stock_result = daily_computer.compute_all_stock_factors(trade_date)

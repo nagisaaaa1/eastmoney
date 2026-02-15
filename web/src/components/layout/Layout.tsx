@@ -35,6 +35,7 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
 import NewspaperIcon from '@mui/icons-material/Newspaper';
 import AccountBalanceWalletIcon from '@mui/icons-material/AccountBalanceWallet';
+import PsychologyAltIcon from '@mui/icons-material/PsychologyAlt';
 
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 
@@ -42,9 +43,9 @@ import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 
 
 
-import { fetchMarketIndices } from '../../api';
+import { fetchMarketIndices, fetchSettings } from '../../api';
 
-import type{IndexData} from '../../api';
+import type{IndexData, SettingsData} from '../../api';
 
 
 
@@ -57,6 +58,7 @@ export default function Layout() {
   const location = useLocation();
 
   const [indices, setIndices] = useState<IndexData[]>([]);
+  const [dataSourceLabel, setDataSourceLabel] = useState<string>('AkShare');
 
   const [username, setUsername] = useState<string>('User');
 
@@ -126,7 +128,9 @@ export default function Layout() {
 
     { text: t('layout.menu.dashboard'), icon: <SpeedIcon />, path: '/dashboard', subtitle: t('layout.menu.dashboard_sub') },
 
-    { text: t('layout.menu.universe'), icon: <PieChartIcon />, path: '/funds', subtitle: t('layout.menu.universe_sub') },
+    { text: t('layout.menu.universe'), icon: <PieChartIcon />, path: '/fund-workbench?tab=universe', subtitle: t('layout.menu.universe_sub') },
+
+    { text: t('layout.menu.fund_decision'), icon: <PsychologyAltIcon />, path: '/fund-workbench?tab=decision', subtitle: t('layout.menu.fund_decision_sub') },
 
     { text: t('layout.menu.portfolio'), icon: <AccountBalanceWalletIcon />, path: '/portfolio', subtitle: t('layout.menu.portfolio_sub') },
 
@@ -166,6 +170,22 @@ export default function Layout() {
 
       }
 
+    };
+
+    const loadDataSource = async () => {
+      try {
+        const settings: SettingsData = await fetchSettings();
+        const provider = (settings.data_source_provider || 'hybrid').toLowerCase();
+        const labelMap: Record<string, string> = {
+          tushare: 'TuShare',
+          akshare: 'AkShare',
+          yfinance: 'yFinance',
+          hybrid: 'TuShare + AkShare (Hybrid)',
+        };
+        setDataSourceLabel(labelMap[provider] || provider);
+      } catch (err) {
+        console.error("Failed to load data source provider", err);
+      }
     };
 
     
@@ -221,6 +241,7 @@ export default function Layout() {
 
 
     loadIndices();
+    loadDataSource();
 
     loadUser();
 
@@ -709,7 +730,7 @@ export default function Layout() {
                 </Typography>
                 <Typography sx={{ color: '#cbd5e1', fontSize: '0.7rem' }}>|</Typography>
                 <Typography sx={{ color: '#94a3b8', fontSize: '0.7rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                    {t('layout.footer.data_source')} <InfoOutlinedIcon sx={{ fontSize: 12 }} />
+                    {t('layout.footer.data_source')}: {dataSourceLabel} <InfoOutlinedIcon sx={{ fontSize: 12 }} />
                 </Typography>
             </Box>
         </Box>

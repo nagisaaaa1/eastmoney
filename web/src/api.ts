@@ -100,8 +100,12 @@ export const fetchMarketFunds = async (query: string): Promise<any[]> => {
   return response.data;
 };
 
-export const generateReport = async (mode: 'pre' | 'post', fundCode?: string): Promise<void> => {
-  await api.post(`/generate/${mode}`, { fund_code: fundCode });
+export const generateReport = async (
+  mode: 'pre' | 'post',
+  fundCode?: string,
+  force: boolean = false
+): Promise<void> => {
+  await api.post(`/generate/${mode}`, { fund_code: fundCode, force });
 };
 
 export interface FundItem {
@@ -116,6 +120,7 @@ export interface FundItem {
 
 export interface SettingsData {
   llm_provider: string;
+  data_source_provider?: string;
   gemini_api_key_masked: string;
   openai_api_key_masked: string;
   openai_base_url?: string;
@@ -875,6 +880,7 @@ export interface UserPreferences {
     investment_goal: 'capital_preservation' | 'steady_income' | 'capital_appreciation' | 'speculation';
     investment_style: 'value' | 'growth' | 'blend' | 'momentum' | 'dividend';
     total_capital?: number;
+    available_cash?: number;
     max_single_position: number;
     max_sector_position: number;
     max_drawdown_tolerance: number;
@@ -2091,6 +2097,15 @@ export interface TransactionCreateData {
     notes?: string;
 }
 
+export interface FundNavAtDate {
+    fund_code: string;
+    requested_date: string;
+    nav_date: string;
+    unit_nav: number;
+    accum_nav: number;
+    is_exact: boolean;
+}
+
 export interface PortfolioCreateData {
     name: string;
     description?: string;
@@ -2190,6 +2205,9 @@ export interface PortfolioSummaryNew {
     total_cost: number;
     total_pnl: number;
     total_pnl_pct: number;
+    total_assets?: number;
+    available_cash?: number;
+    cash_source?: string;
     positions_count: number;
     positions: UnifiedPosition[];
     allocation: {
@@ -2309,10 +2327,20 @@ export const fetchTransactions = async (
     return response.data;
 };
 
+export const fetchFundNavAtDate = async (
+    fundCode: string,
+    date: string
+): Promise<FundNavAtDate> => {
+    const response = await api.get(`/portfolios/funds/${fundCode}/nav-at-date`, {
+        params: { date }
+    });
+    return response.data;
+};
+
 export const createTransaction = async (
     portfolioId: number,
     data: TransactionCreateData
-): Promise<{ id: number; message: string }> => {
+): Promise<{ id: number; message: string; available_cash?: number | null }> => {
     const response = await api.post(`/portfolios/${portfolioId}/transactions`, data);
     return response.data;
 };
@@ -2320,7 +2348,7 @@ export const createTransaction = async (
 export const deleteTransaction = async (
     portfolioId: number,
     transactionId: number
-): Promise<{ message: string }> => {
+): Promise<{ message: string; available_cash?: number | null }> => {
     const response = await api.delete(`/portfolios/${portfolioId}/transactions/${transactionId}`);
     return response.data;
 };
@@ -3106,7 +3134,7 @@ export const getShortTermFundsV2 = async (
 export const getLongTermFundsV2 = async (
     limit: number = 20,
     tradeDate?: string
-): Promise<{ funds: RecommendationFundV2[]; trade_date: string }> => {
+): Promise<{ funds?: RecommendationFundV2[]; recommendations?: RecommendationFundV2[]; trade_date: string }> => {
     const params: Record<string, any> = { limit };
     if (tradeDate) params.trade_date = tradeDate;
     const response = await api.get('/recommend/funds/long', { params });
@@ -3177,5 +3205,584 @@ export const computeFactorsV2 = async (
 // V2 Get Factor Status
 export const getFactorStatusV2 = async (): Promise<FactorStatus> => {
     const response = await api.get('/recommend/factor-status');
+    return response.data;
+};
+
+// ====================================================================
+// Fund Research Workflow API (Candidate Pool + Scoring + DCA Decision)
+// ====================================================================
+
+export interface FundUniverseItem {
+    code: string;
+    ts_code?: string;
+    name: string;
+    fund_type?: string;
+    invest_type?: string;
+    market?: string;
+    management?: string;
+    found_date?: string;
+    m_fee?: number;
+    c_fee?: number;
+    is_index_fund: boolean;
+    is_etf: boolean;
+    is_linked: boolean;
+    is_dca_eligible: boolean;
+    status: string;
+    updated_at?: string;
+    metadata?: Record<string, any>;
+}
+
+export interface FundResearchScore {
+    code: string;
+    name: string;
+    fund_type?: string;
+    trade_date: string;
+    total_score: number;
+    quality_score: number;
+    risk_return_score: number;
+    valuation_position_score: number;
+    hard_filter_pass: boolean;
+    hard_filter_reasons: string[];
+    missing_factors?: boolean;
+    factors?: FundFactors;
+}
+
+export interface FundResearchRecommendation {
+    decision_id?: number;
+    code: string;
+    name: string;
+    trade_date: string;
+    analysis_mode?: 'quick' | 'deep';
+    action: 'add' | 'hold' | 'pause';
+    base_amount: number;
+    suggested_amount: number;
+    allocation_multiplier: number;
+    strict_tactical_enabled?: boolean;
+    strict_tactical_triggered?: boolean;
+    tactical_boost_enabled?: boolean;
+    tactical_boost_triggered?: boolean;
+    tactical_boost_reason?: string[];
+    confidence: number;
+    confidence_band?: 'low' | 'medium' | 'high';
+    bull_points?: string[];
+    bear_points?: string[];
+    disagreement_points?: string[];
+    strategy_explanation?: string;
+    user_constraints?: {
+        available_cash?: number;
+        max_single_day_amount?: number;
+        existing_dca_daily_amount?: number;
+        max_drawdown_tolerance?: number;
+        tactical_boost_enabled?: boolean;
+    };
+    scorecard: FundResearchScore;
+    evidence: Array<{
+        metric: string;
+        value: number | string;
+        source: string;
+        timestamp?: string;
+    }>;
+    trigger_conditions: string[];
+    invalidate_conditions: string[];
+    risk_notes: string[];
+    context_hash?: string;
+    context_snapshot_id?: number;
+    latency_ms?: number;
+    deep_analysis?: {
+      roles: Array<{
+        role: string;
+        view: string;
+        evidence: string[];
+      }>;
+      debate: {
+        bull: string[];
+        bear: string[];
+        arbitrator: string;
+      };
+    };
+    global_context?: Record<string, any>;
+    fund_context?: Record<string, any>;
+    generated_at: string;
+}
+
+export const fetchFundResearchUniverse = async (
+    activeOnly: boolean = true,
+    limit: number = 500
+): Promise<{
+    count: number;
+    last_updated?: string;
+    policy: Record<string, any>;
+    items: FundUniverseItem[];
+}> => {
+    const response = await api.get('/research/fund/universe', {
+        params: { active_only: activeOnly, limit },
+    });
+    return response.data;
+};
+
+export const syncFundResearchUniverse = async (
+    fullSync: boolean = false,
+    codes?: string[]
+): Promise<{
+    status: string;
+    full_sync: boolean;
+    updated: number;
+    universe_count: number;
+}> => {
+    const response = await api.post('/research/fund/universe/sync', {
+        full_sync: fullSync,
+        codes: codes && codes.length > 0 ? codes : undefined,
+    });
+    return response.data;
+};
+
+export const scoreFundResearch = async (request: {
+    codes?: string[];
+    top_n?: number;
+    min_score?: number;
+    refresh_missing?: boolean;
+}): Promise<{
+    trade_date: string;
+    universe_size: number;
+    eligible_count: number;
+    missing_factor_count: number;
+    scores: FundResearchScore[];
+    rejected: Array<{ code: string; name: string; reasons: string[] }>;
+}> => {
+    const response = await api.post('/research/fund/score', request);
+    return response.data;
+};
+
+export const recommendFundResearch = async (request: {
+    code: string;
+    base_amount: number;
+    available_cash?: number;
+    max_single_day_amount?: number;
+    existing_dca_daily_amount?: number;
+    max_drawdown_tolerance?: number;
+    tactical_boost?: boolean;
+    strict_tactical?: boolean;
+    analysis_mode?: 'quick' | 'deep';
+    use_global_cash?: boolean;
+    use_auto_dca?: boolean;
+    refresh_missing?: boolean;
+}): Promise<FundResearchRecommendation> => {
+    const response = await api.post('/research/fund/recommend', request);
+    return response.data;
+};
+
+export const fetchFundResearchReport = async (
+    code: string,
+    refresh: boolean = false
+): Promise<{
+    available: boolean;
+    source?: 'cache' | 'fresh';
+    message?: string;
+    report?: FundResearchRecommendation;
+    cache: {
+        ttl_seconds: number;
+        age_seconds?: number;
+        stale?: boolean;
+        refreshing?: boolean;
+    };
+}> => {
+    const response = await api.get(`/research/fund/report/${code}`, {
+        params: { refresh },
+    });
+    return response.data;
+};
+
+export interface FundResearchReviewRequest {
+    code: string;
+    decision_id?: number;
+    trade_date?: string;
+    actual_return_pct: number;
+    max_drawdown_pct: number;
+    executed_amount?: number;
+    followed_plan?: boolean;
+    market_state?: string;
+    reflection?: string;
+    strategy_version?: string;
+}
+
+export interface FundResearchReviewResult {
+    review_id: number;
+    case_id: number;
+    fund_code: string;
+    trade_date: string;
+    outcome: 'success' | 'neutral' | 'failure';
+    scores: {
+        timing: number;
+        position: number;
+        risk: number;
+        discipline: number;
+        composite: number;
+    };
+    review: Record<string, any>;
+}
+
+export const submitFundResearchReview = async (
+    request: FundResearchReviewRequest
+): Promise<FundResearchReviewResult> => {
+    const response = await api.post('/research/fund/review', request);
+    return response.data;
+};
+
+export const fetchFundResearchReviewSummary = async (
+    code?: string,
+    window: number = 20
+): Promise<{
+    count: number;
+    averages: {
+        timing: number;
+        position: number;
+        risk: number;
+        discipline: number;
+        composite: number;
+    };
+    outcome_distribution: Record<string, number>;
+    suggestions: string[];
+    rows: any[];
+}> => {
+    const response = await api.get('/research/fund/review/summary', {
+        params: {
+            code: code || undefined,
+            window,
+        },
+    });
+    return response.data;
+};
+
+export const fetchFundResearchCases = async (params?: {
+    code?: string;
+    outcome?: string;
+    market_state?: string;
+    strategy_version?: string;
+    limit?: number;
+}): Promise<{
+    count: number;
+    filters: Record<string, any>;
+    cases: Array<{
+        id: number;
+        fund_code: string;
+        trade_date?: string;
+        outcome: string;
+        market_state?: string;
+        strategy_version?: string;
+        summary?: string;
+        tags?: string[];
+        payload?: Record<string, any>;
+    }>;
+}> => {
+    const response = await api.get('/research/fund/cases', { params });
+    return response.data;
+};
+
+export interface FundResearchGlobalContextResponse {
+    context: {
+        total_capital?: number;
+        portfolio_market_value?: number;
+        available_cash?: number;
+        holding_count?: number;
+        [key: string]: any;
+    };
+    context_hash: string;
+    context_snapshot_id: number;
+    latest?: Record<string, any>;
+}
+
+export interface FundResearchFundContextResponse {
+    context: {
+        code: string;
+        global_context: Record<string, any>;
+        fund_context: {
+            existing_dca_daily_amount?: number;
+            dca_metrics_30d?: Record<string, any>;
+            [key: string]: any;
+        };
+    };
+    context_hash: string;
+    context_snapshot_id: number;
+    latest?: Record<string, any>;
+}
+
+export interface FundResearchBatchItem {
+    id: number;
+    fund_code: string;
+    status: string;
+    error_message?: string;
+    decision_id?: number;
+    result?: FundResearchRecommendation;
+    started_at?: string;
+    finished_at?: string;
+}
+
+export interface FundResearchBatchJob {
+    id: number;
+    source: string;
+    analysis_mode: string;
+    status: string;
+    total_count: number;
+    completed_count: number;
+    failed_count: number;
+    cancelled_count: number;
+    message?: string;
+    input?: Record<string, any>;
+    context?: Record<string, any>;
+    created_at: string;
+    started_at?: string;
+    finished_at?: string;
+    items?: FundResearchBatchItem[];
+    progress?: {
+        total: number;
+        completed: number;
+        failed: number;
+        cancelled: number;
+        done_ratio: number;
+    };
+}
+
+export const fetchFundResearchGlobalContext = async (): Promise<FundResearchGlobalContextResponse> => {
+    const response = await api.get('/research/fund/context/global');
+    return response.data;
+};
+
+export const fetchFundResearchFundContext = async (code: string): Promise<FundResearchFundContextResponse> => {
+    const response = await api.get(`/research/fund/context/fund/${code}`);
+    return response.data;
+};
+
+export const createFundResearchBatchRecommendJob = async (request: {
+    codes?: string[];
+    top_n?: number;
+    source?: string;
+    base_amount?: number;
+    available_cash?: number;
+    max_single_day_amount?: number;
+    existing_dca_daily_amount?: number;
+    max_drawdown_tolerance?: number;
+    tactical_boost?: boolean;
+    strict_tactical?: boolean;
+    analysis_mode?: 'quick' | 'deep';
+    use_global_cash?: boolean;
+    use_auto_dca?: boolean;
+    refresh_missing?: boolean;
+    auto_start?: boolean;
+    max_workers?: number;
+}): Promise<{
+    job_id: number;
+    codes: string[];
+    count: number;
+    auto_start: boolean;
+    max_workers: number;
+    job?: FundResearchBatchJob;
+}> => {
+    const response = await api.post('/research/fund/batch/recommend', request);
+    return response.data;
+};
+
+export const fetchFundResearchBatchJobs = async (limit: number = 20): Promise<{
+    jobs: FundResearchBatchJob[];
+}> => {
+    const response = await api.get('/research/fund/batch/jobs', { params: { limit } });
+    return response.data;
+};
+
+export const fetchFundResearchBatchJob = async (jobId: number): Promise<FundResearchBatchJob> => {
+    const response = await api.get(`/research/fund/batch/jobs/${jobId}`);
+    return response.data;
+};
+
+export const retryFundResearchBatchJobFailures = async (
+    jobId: number,
+    autoStart: boolean = true,
+    maxWorkers: number = 3
+): Promise<{
+    job_id: number;
+    reset_count: number;
+    auto_start: boolean;
+    max_workers: number;
+    job?: FundResearchBatchJob;
+}> => {
+    const response = await api.post(`/research/fund/batch/jobs/${jobId}/retry-failures`, null, {
+        params: { auto_start: autoStart, max_workers: maxWorkers },
+    });
+    return response.data;
+};
+
+export const cancelFundResearchBatchJob = async (jobId: number): Promise<{
+    job_id: number;
+    changed_items: number;
+    job?: FundResearchBatchJob;
+}> => {
+    const response = await api.post(`/research/fund/batch/jobs/${jobId}/cancel`);
+    return response.data;
+};
+
+export interface FundAISelectionResult {
+    trade_date: string;
+    candidate_count: number;
+    selected_count: number;
+    selected: Array<{
+        rank: number;
+        code: string;
+        name: string;
+        score: number;
+        quality_score: number;
+        risk_return_score: number;
+        valuation_position_score: number;
+        return_1m?: number;
+        return_3m?: number;
+        sharpe_1y?: number;
+        max_drawdown_1y?: number;
+    }>;
+    market_context?: Record<string, any>;
+    debate?: {
+        engine: string;
+        roles: Array<{ role: string; view: string }>;
+        bull: string;
+        bear: string;
+        arbitrator: string;
+    } | null;
+}
+
+export const runFundAISelection = async (request: {
+    top_n?: number;
+    candidate_limit?: number;
+    min_score?: number;
+    refresh_missing?: boolean;
+    analysis_mode?: 'quick' | 'deep';
+}): Promise<FundAISelectionResult> => {
+    const response = await api.post('/research/fund/select', request);
+    return response.data;
+};
+
+export interface FundConstraintSuggestion {
+    rule_suggestion: {
+        available_cash: number;
+        recommended_max_single_day_amount: number;
+        recommended_residual_today: number;
+        recommended_max_drawdown_tolerance: number;
+        recommended_tactical_boost: boolean;
+        risk_level: string;
+    };
+    ai_suggestion?: Record<string, any> | null;
+    final_suggestion: {
+        max_single_day_amount: number;
+        max_drawdown_tolerance: number;
+        tactical_boost: boolean;
+    };
+    global_context: Record<string, any>;
+}
+
+export const fetchFundConstraintSuggestions = async (): Promise<FundConstraintSuggestion> => {
+    const response = await api.get('/research/fund/constraints/suggestions');
+    return response.data;
+};
+
+export interface FundDCAPlan {
+    id: number;
+    user_id: number;
+    fund_code: string;
+    fund_name?: string;
+    amount_per_cycle: number;
+    frequency: 'daily' | 'weekly' | 'monthly';
+    execution_weekday?: number;
+    execution_day?: number;
+    start_date: string;
+    end_date?: string;
+    next_run_date: string;
+    status: 'active' | 'paused' | 'stopped';
+    auto_adjust: boolean;
+    max_daily_amount?: number;
+    last_run_date?: string;
+    last_run_status?: string;
+    metadata?: Record<string, any>;
+    created_at?: string;
+    updated_at?: string;
+}
+
+export const fetchFundDCAPlans = async (params?: {
+    status?: string;
+    code?: string;
+    limit?: number;
+}): Promise<{ count: number; plans: FundDCAPlan[] }> => {
+    const response = await api.get('/research/fund/dca/plans', { params });
+    return response.data;
+};
+
+export const createFundDCAPlan = async (request: {
+    code: string;
+    amount_per_cycle: number;
+    frequency?: 'daily' | 'weekly' | 'monthly';
+    start_date?: string;
+    end_date?: string;
+    execution_weekday?: number;
+    execution_day?: number;
+    auto_adjust?: boolean;
+    max_daily_amount?: number;
+    fund_name?: string;
+    notes?: string;
+}): Promise<{ plan_id: number; plan: FundDCAPlan }> => {
+    const response = await api.post('/research/fund/dca/plans', request);
+    return response.data;
+};
+
+export const updateFundDCAPlan = async (
+    planId: number,
+    request: {
+        action?: 'pause' | 'resume' | 'stop';
+        amount_per_cycle?: number;
+        frequency?: 'daily' | 'weekly' | 'monthly';
+        end_date?: string;
+        execution_weekday?: number;
+        execution_day?: number;
+        auto_adjust?: boolean;
+        max_daily_amount?: number;
+        notes?: string;
+    }
+): Promise<{ updated: boolean; plan: FundDCAPlan | null }> => {
+    const response = await api.patch(`/research/fund/dca/plans/${planId}`, request);
+    return response.data;
+};
+
+export interface FundDCARun {
+    id: number;
+    plan_id: number;
+    fund_code: string;
+    scheduled_date: string;
+    planned_amount: number;
+    suggested_amount?: number;
+    status: string;
+    context?: Record<string, any>;
+    created_at?: string;
+}
+
+export const fetchFundDCARuns = async (params?: {
+    plan_id?: number;
+    code?: string;
+    limit?: number;
+}): Promise<{ count: number; runs: FundDCARun[] }> => {
+    const response = await api.get('/research/fund/dca/runs', { params });
+    return response.data;
+};
+
+export const simulateFundDCA = async (request?: {
+    target_date?: string;
+    max_plans?: number;
+}): Promise<{
+    target_date: string;
+    due_count: number;
+    simulated_count: number;
+    runs: Array<{
+        plan_id: number;
+        run_id: number;
+        fund_code: string;
+        planned_amount: number;
+        suggested_amount: number;
+        status: string;
+    }>;
+}> => {
+    const response = await api.post('/research/fund/dca/simulate', request || {});
     return response.data;
 };

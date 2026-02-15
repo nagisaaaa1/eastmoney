@@ -16,8 +16,8 @@ from datetime import datetime
 
 from src.data_sources.tushare_client import (
     get_latest_trade_date,
-    format_date_yyyymmdd,
 )
+from src.data_sources.fund_data_provider import get_fallback_trade_date
 from src.storage.db import (
     insert_recommendation_record,
     get_recommendation_performance_stats,
@@ -101,7 +101,7 @@ class RecommendationEngine:
         if not trade_date:
             trade_date = get_latest_trade_date()
             if not trade_date:
-                trade_date = format_date_yyyymmdd()
+                trade_date = get_fallback_trade_date()
         print(f"[EngineV2] Using trade_date: {trade_date}")
 
         results = {

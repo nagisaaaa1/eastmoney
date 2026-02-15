@@ -9,10 +9,13 @@ import {
   Alert,
   Tabs,
   Tab,
+  Stack,
   Tooltip,
   Snackbar,
   Paper,
   Dialog,
+  TextField,
+  Chip,
   useTheme,
   alpha,
 } from '@mui/material';
@@ -58,6 +61,8 @@ import {
   fetchReturnsCalendar,
   fetchDailyReturnsDetail,
   fetchReturnsExplanation,
+  getUserPreferences,
+  saveUserPreferences,
 } from '../api';
 import type {
   Portfolio,
@@ -145,10 +150,15 @@ export default function PortfolioPage() {
     totalCost: 0,
     totalPnl: 0,
     totalPnlPct: 0,
+    totalAssets: 0,
+    availableCash: 0,
+    cashSource: 'unknown',
     positionsCount: 0,
     allocationByType: {} as Record<string, number>,
     allocationBySector: {} as Record<string, number>,
   });
+  const [availableCashInput, setAvailableCashInput] = useState('0');
+  const [cashSaving, setCashSaving] = useState(false);
 
   // UI state
   const [loading, setLoading] = useState(true);
@@ -220,10 +230,14 @@ export default function PortfolioPage() {
         totalCost: summaryRes.total_cost,
         totalPnl: summaryRes.total_pnl,
         totalPnlPct: summaryRes.total_pnl_pct,
+        totalAssets: summaryRes.total_assets ?? summaryRes.total_value + (summaryRes.available_cash ?? 0),
+        availableCash: summaryRes.available_cash ?? 0,
+        cashSource: summaryRes.cash_source || 'unknown',
         positionsCount: summaryRes.positions_count,
         allocationByType: summaryRes.allocation?.by_type || {},
         allocationBySector: summaryRes.allocation?.by_sector || {},
       });
+      setAvailableCashInput(String(summaryRes.available_cash ?? 0));
       setAlerts(alertsRes.alerts);
     } catch (err: any) {
       if (isMountedRef.current) setError(err.message || t('portfolio.error_load'));
@@ -480,6 +494,43 @@ export default function PortfolioPage() {
     setTransactionFormOpen(true);
   };
 
+  const invalidateReturnsCache = () => {
+    setReturnsSummary(null);
+    setReturnsCalendar(null);
+    setDailyReturnsDetail(null);
+    setReturnsExplanation(null);
+  };
+
+  const handleSaveAvailableCash = async () => {
+    const parsed = Number(availableCashInput);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      showSnackbar('可用现金请输入大于等于 0 的数字', 'error');
+      return;
+    }
+
+    setCashSaving(true);
+    try {
+      await saveUserPreferences({ available_cash: parsed });
+      if (currentPortfolio) {
+        await loadPortfolioData(currentPortfolio.id);
+      } else {
+        const prefs = await getUserPreferences();
+        const cash = Number(prefs.preferences?.available_cash ?? parsed);
+        setSummary((prev) => ({
+          ...prev,
+          availableCash: cash,
+          totalAssets: prev.totalValue + cash,
+          cashSource: 'manual_preference',
+        }));
+      }
+      showSnackbar('可用现金已保存，基金决策会自动读取该值', 'success');
+    } catch (err: any) {
+      showSnackbar(err?.message || '保存可用现金失败', 'error');
+    } finally {
+      setCashSaving(false);
+    }
+  };
+
   const handleCreateTransaction = async (data: TransactionFormData) => {
     if (!currentPortfolio) return;
     await createTransaction(currentPortfolio.id, data);
@@ -488,6 +539,7 @@ export default function PortfolioPage() {
     if (tab === 'transactions') {
       await loadTransactions();
     }
+    invalidateReturnsCache();
     showSnackbar(t('portfolio.add_transaction') + ' - ' + t('common.success'), 'success');
   };
 
@@ -495,7 +547,10 @@ export default function PortfolioPage() {
     if (!currentPortfolio) return;
     if (!window.confirm(t('portfolio.confirm_delete'))) return;
     await deleteTransaction(currentPortfolio.id, transactionId);
+    await loadPortfolioData(currentPortfolio.id);
+    await loadInstitutionalData(currentPortfolio.id);
     await loadTransactions();
+    invalidateReturnsCache();
     showSnackbar(t('common.deleted'), 'success');
   };
 
@@ -505,6 +560,7 @@ export default function PortfolioPage() {
     await deleteUnifiedPosition(currentPortfolio.id, positionId);
     await loadPortfolioData(currentPortfolio.id);
     await loadInstitutionalData(currentPortfolio.id);
+    invalidateReturnsCache();
     showSnackbar(t('common.deleted'), 'success');
   };
 
@@ -512,6 +568,7 @@ export default function PortfolioPage() {
     if (!currentPortfolio) return;
     await updateUnifiedPosition(currentPortfolio.id, positionId, updates);
     await loadPortfolioData(currentPortfolio.id);
+    invalidateReturnsCache();
     showSnackbar(t('common.saved'), 'success');
   };
 
@@ -519,6 +576,7 @@ export default function PortfolioPage() {
     if (!currentPortfolio) return;
     await recalculatePosition(currentPortfolio.id, positionId);
     await loadPortfolioData(currentPortfolio.id);
+    invalidateReturnsCache();
     showSnackbar(t('portfolio.recalculate') + ' - ' + t('common.success'), 'success');
   };
 
@@ -648,6 +706,61 @@ export default function PortfolioPage() {
         } : undefined}
         loading={riskLoading}
       />
+
+      <Paper
+        elevation={0}
+        sx={{
+          p: 2,
+          mb: 3,
+          borderRadius: 3,
+          border: `1px solid ${alpha(theme.palette.divider, 0.12)}`,
+          background: alpha(theme.palette.background.paper, 0.92),
+        }}
+      >
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.2 }}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+            资金设置（资产主入口）
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            可用现金为基金决策、AI 精选建议金额、定投约束的统一输入；交易会自动联动更新。
+          </Typography>
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2} alignItems={{ xs: 'stretch', md: 'center' }}>
+            <TextField
+              size="small"
+              label="可用现金"
+              type="number"
+              value={availableCashInput}
+              onChange={(e) => setAvailableCashInput(e.target.value)}
+              sx={{ width: { xs: '100%', md: 220 } }}
+              inputProps={{ min: 0, step: '0.01' }}
+            />
+            <Button
+              variant="contained"
+              disabled={cashSaving}
+              onClick={handleSaveAvailableCash}
+              startIcon={cashSaving ? <CircularProgress size={14} color="inherit" /> : undefined}
+            >
+              保存可用现金
+            </Button>
+            <Chip
+              variant="outlined"
+              color="primary"
+              label={`当前可用现金：¥${(summary.availableCash || 0).toFixed(2)}`}
+            />
+            <Chip
+              variant="outlined"
+              label={`总资产(含现金)：¥${(summary.totalAssets || summary.totalValue + (summary.availableCash || 0)).toFixed(2)}`}
+            />
+            <Chip
+              variant="outlined"
+              label={`持仓市值：¥${(summary.totalValue || 0).toFixed(2)}`}
+            />
+          </Stack>
+          <Typography variant="caption" color="text.secondary">
+            资金来源：{summary.cashSource === 'manual_preference' ? '手动设定' : summary.cashSource === 'derived_total_capital' ? '由总资金推导' : '未设定'}
+          </Typography>
+        </Box>
+      </Paper>
 
       {/* Tabs */}
       <Tabs

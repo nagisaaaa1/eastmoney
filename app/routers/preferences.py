@@ -43,7 +43,12 @@ async def save_user_preferences_endpoint(
 ):
     """Save user investment preferences."""
     try:
-        save_user_preferences(user_id=current_user.id, preferences=preferences)
+        existing = get_user_preferences(user_id=current_user.id) or {}
+        merged_preferences = {
+            **(existing.get("preferences") or {}),
+            **(preferences or {}),
+        }
+        save_user_preferences(user_id=current_user.id, preferences=merged_preferences)
 
         return {
             "success": True,

@@ -7,7 +7,7 @@ import time
 import pandas as pd
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
-from config.settings import TUSHARE_API_TOKEN
+from config.settings import TUSHARE_API_TOKEN, TUSHARE_HTTP_URL
 
 
 def format_date_yyyymmdd(dt: datetime = None) -> str:
@@ -18,6 +18,29 @@ def format_date_yyyymmdd(dt: datetime = None) -> str:
 
 # Lazy import to avoid errors if tushare not installed
 _tushare_pro = None
+_permission_denied_methods = set()
+
+
+def _apply_tushare_endpoint_overrides(pro, token: str):
+    """
+    Apply optional endpoint/token overrides for private TuShare gateways.
+
+    Some third-party gateways require overriding DataApi private attributes.
+    """
+    if token:
+        try:
+            pro._DataApi__token = token
+        except Exception:
+            pass
+
+    if TUSHARE_HTTP_URL:
+        endpoint = str(TUSHARE_HTTP_URL).strip().rstrip("/")
+        if endpoint:
+            try:
+                pro._DataApi__http_url = endpoint
+                print(f"TuShare using custom endpoint: {endpoint}")
+            except Exception:
+                print("Warning: failed to apply TUSHARE_HTTP_URL override")
 
 
 def _get_tushare_pro():
@@ -32,6 +55,7 @@ def _get_tushare_pro():
         try:
             import tushare as ts
             _tushare_pro = ts.pro_api(TUSHARE_API_TOKEN)
+            _apply_tushare_endpoint_overrides(_tushare_pro, TUSHARE_API_TOKEN)
         except ImportError:
             raise ImportError(
                 "tushare not installed. Run: pip install tushare"
@@ -57,6 +81,9 @@ def tushare_call_with_retry(
     Returns:
         DataFrame with results, or None if all retries failed
     """
+    if api_method in _permission_denied_methods:
+        return None
+
     # Lazy import to avoid circular dependency
     from src.analysis.recommendation.factor_store.rate_limiter import tushare_rate_limiter
 
@@ -92,6 +119,18 @@ def tushare_call_with_retry(
                 else:
                     print(f"TuShare rate limit exhausted for {api_method} after {max_retries} retries")
                     return None
+
+            # Check for permission error (interface entitlement missing)
+            permission_markers = (
+                "没有接口访问权限",
+                "权限的具体详情",
+                "doc_id=",
+                "permission denied",
+            )
+            if any(marker in error_msg for marker in permission_markers):
+                _permission_denied_methods.add(api_method)
+                print(f"TuShare permission denied for {api_method}: {error_msg}")
+                return None
 
             # Check for authentication error
             if "auth" in error_msg.lower() or "token" in error_msg.lower():
@@ -500,7 +539,9 @@ def get_latest_trade_date(max_days_back: int = 30, offset: int = 0) -> Optional[
                     return valid_days[-1]
 
     except Exception as e:
-        print(f"Error fetching latest trade date: {e}")
+        error_msg = str(e)
+        if "没有接口访问权限" not in error_msg and "权限的具体详情" not in error_msg:
+            print(f"Error fetching latest trade date: {e}")
 
     return None
 

@@ -33,6 +33,16 @@ import type {
   SectorItem,
 } from '../../api';
 
+const FUND_MARKET_OVERVIEW_CACHE_KEY = 'fund_market_overview_cache_v1';
+
+interface FundMarketOverviewCache {
+  indices: MarketIndicesResponse | null;
+  sectors: MarketSectorsResponse | null;
+  northbound: NorthboundFlowResponse | null;
+  sentiment: MarketSentiment | null;
+  cachedAt: string;
+}
+
 export default function FundMarketOverview() {
   const [indices, setIndices] = useState<MarketIndicesResponse | null>(null);
   const [sectors, setSectors] = useState<MarketSectorsResponse | null>(null);
@@ -41,8 +51,10 @@ export default function FundMarketOverview() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const loadData = async () => {
-    setLoading(true);
+  const loadData = async ({ background = false }: { background?: boolean } = {}) => {
+    if (!background) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const [indicesRes, sectorsRes, northboundRes, sentimentRes] = await Promise.all([
@@ -55,16 +67,45 @@ export default function FundMarketOverview() {
       setSectors(sectorsRes);
       setNorthbound(northboundRes);
       setSentiment(sentimentRes);
+
+      const snapshot: FundMarketOverviewCache = {
+        indices: indicesRes,
+        sectors: sectorsRes,
+        northbound: northboundRes,
+        sentiment: sentimentRes,
+        cachedAt: new Date().toISOString(),
+      };
+      localStorage.setItem(FUND_MARKET_OVERVIEW_CACHE_KEY, JSON.stringify(snapshot));
     } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : '加载市场数据失败';
-      setError(errorMessage);
+      const errorMessage = err instanceof Error ? err.message : 'Failed to load market data';
+      if (!indices && !sectors && !northbound && !sentiment) {
+        setError(errorMessage);
+      }
     } finally {
-      setLoading(false);
+      if (!background) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    loadData();
+    let hasCachedData = false;
+    try {
+      const raw = localStorage.getItem(FUND_MARKET_OVERVIEW_CACHE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as FundMarketOverviewCache;
+        setIndices(parsed.indices ?? null);
+        setSectors(parsed.sectors ?? null);
+        setNorthbound(parsed.northbound ?? null);
+        setSentiment(parsed.sentiment ?? null);
+        setLoading(false);
+        hasCachedData = true;
+      }
+    } catch {
+      // Ignore invalid cache and continue with network fetch.
+    }
+
+    loadData({ background: hasCachedData });
   }, []);
 
   const formatNumber = (num: number, unit: string = '') => {
@@ -387,7 +428,7 @@ export default function FundMarketOverview() {
         }}
       >
         <Typography sx={{ color: '#ef4444', mb: 2 }}>{error}</Typography>
-        <IconButton onClick={loadData} sx={{ color: '#6366f1' }}>
+        <IconButton onClick={() => { void loadData(); }} sx={{ color: '#6366f1' }}>
           <RefreshIcon />
         </IconButton>
       </Paper>
@@ -407,7 +448,7 @@ export default function FundMarketOverview() {
         </Box>
         <Tooltip title="刷新数据">
           <IconButton
-            onClick={loadData}
+            onClick={() => { void loadData(); }}
             size="small"
             sx={{ color: '#94a3b8', '&:hover': { color: '#6366f1' } }}
           >

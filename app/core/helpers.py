@@ -9,6 +9,7 @@ import akshare as ak
 
 from src.data_sources.akshare_api import get_all_fund_list, get_stock_realtime_quote, get_stock_history
 from src.data_sources.data_source_manager import get_fund_info_from_tushare
+from src.data_sources.fund_data_provider import get_fund_nav_with_fallback
 
 
 def get_fund_nav_history(fund_code: str, days: int = 100) -> List[Dict]:
@@ -51,6 +52,66 @@ def get_fund_nav_history(fund_code: str, days: int = 100) -> List[Dict]:
     except Exception as e:
         print(f"Error fetching NAV history for {fund_code}: {e}")
         return []
+
+
+def get_fund_nav_on_or_before_date(fund_code: str, target_date: str) -> Optional[Dict[str, Any]]:
+    """
+    Get fund NAV on or before a target date.
+
+    Args:
+        fund_code: 6-digit fund code
+        target_date: Date string in YYYY-MM-DD or YYYYMMDD
+
+    Returns:
+        Dict with NAV info, or None if unavailable
+    """
+    if not fund_code:
+        raise ValueError("fund_code is required")
+    if not target_date:
+        raise ValueError("date is required")
+
+    date_str = str(target_date).strip()
+    if '-' in date_str:
+        target_dt = datetime.strptime(date_str, '%Y-%m-%d')
+    elif len(date_str) == 8 and date_str.isdigit():
+        target_dt = datetime.strptime(date_str, '%Y%m%d')
+    else:
+        raise ValueError("date must be YYYY-MM-DD or YYYYMMDD")
+
+    end_date = target_dt.strftime('%Y%m%d')
+    start_date = (target_dt - pd.Timedelta(days=120)).strftime('%Y%m%d')
+    nav_df = get_fund_nav_with_fallback(fund_code, start_date=start_date, end_date=end_date)
+
+    if nav_df is None or nav_df.empty:
+        nav_df = get_fund_nav_with_fallback(fund_code, start_date=None, end_date=end_date)
+
+    if nav_df is None or nav_df.empty:
+        return None
+
+    nav_df = nav_df[nav_df['nav_date'] <= end_date]
+    if nav_df.empty:
+        return None
+
+    latest = nav_df.sort_values('nav_date').iloc[-1]
+    nav_date_raw = str(latest.get('nav_date'))
+    nav_date = f"{nav_date_raw[:4]}-{nav_date_raw[4:6]}-{nav_date_raw[6:8]}"
+    unit_nav = latest.get('unit_nav')
+    accum_nav = latest.get('accum_nav')
+
+    if unit_nav is None or pd.isna(unit_nav):
+        return None
+
+    if accum_nav is None or pd.isna(accum_nav):
+        accum_nav = unit_nav
+
+    return {
+        'fund_code': fund_code,
+        'requested_date': target_dt.strftime('%Y-%m-%d'),
+        'nav_date': nav_date,
+        'unit_nav': float(unit_nav),
+        'accum_nav': float(accum_nav),
+        'is_exact': nav_date_raw == end_date,
+    }
 
 
 def get_fund_basic_info(fund_code: str) -> Optional[Dict]:

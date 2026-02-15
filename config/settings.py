@@ -28,6 +28,7 @@ REDIS_URL = os.getenv("REDIS_URL")  # e.g., redis://localhost:6379/0 or redis://
 
 # TuShare Pro Configuration
 TUSHARE_API_TOKEN = os.getenv("TUSHARE_API_TOKEN")
+TUSHARE_HTTP_URL = os.getenv("TUSHARE_HTTP_URL")  # Optional private gateway, e.g. http://example.com
 
 # TuShare Points Level (determines API rate limits)
 # Options: 120, 2000, 5000, 10000

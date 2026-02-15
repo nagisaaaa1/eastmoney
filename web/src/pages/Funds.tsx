@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import {
   Typography,
   Button,
@@ -48,6 +49,7 @@ import EmojiEventsIcon from '@mui/icons-material/EmojiEvents';
 import FolderIcon from '@mui/icons-material/Folder';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
+import PsychologyAltIcon from '@mui/icons-material/PsychologyAlt';
 import {
   LineChart,
   Line,
@@ -71,7 +73,7 @@ import {
 
 import type { MarketFund, FundItem, FundComparisonResponse, BatchFundEstimation } from '../api';
 import { useAppContext } from '../contexts/AppContext';
-import { FundMarketOverview, FundRankingTable, FundDetailDialog } from '../components/fund';
+import { FundMarketOverview, FundRankingTable, FundDetailDialog, FundResearchWorkbench } from '../components/fund';
 
 const CHART_COLORS = [
   '#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6',
@@ -81,6 +83,7 @@ const CHART_COLORS = [
 
 export default function FundsPage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { setCurrentPage, setCurrentFund } = useAppContext();
   const [funds, setFunds] = useState<FundItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -213,7 +216,7 @@ export default function FundsPage() {
     if (!menuFund) return;
     try {
         showNotify(`Initializing ${mode.toUpperCase()} market intelligence for ${menuFund.code}...`, 'info');
-        await generateReport(mode, menuFund.code);
+        await generateReport(mode, menuFund.code, true);
         showNotify(t('funds.messages.trigger_success'), 'success');
     } catch (error) {
         showNotify(`Failed to trigger intelligence node: ${error}`, 'error');
@@ -390,6 +393,21 @@ export default function FundsPage() {
           </Typography>
         </div>
         <Box sx={{ display: 'flex', gap: 1.5 }}>
+          <Button
+            variant="outlined"
+            startIcon={<PsychologyAltIcon />}
+            onClick={() => navigate('/fund-workbench')}
+            sx={{
+              borderRadius: '10px',
+              textTransform: 'none',
+              fontWeight: 700,
+              borderColor: '#cbd5e1',
+              color: '#334155',
+              '&:hover': { borderColor: '#6366f1', color: '#6366f1', bgcolor: 'rgba(99, 102, 241, 0.05)' },
+            }}
+          >
+            基金决策中心
+          </Button>
           {pageTab === 2 && compareMode ? (
             <>
               <Button
@@ -507,6 +525,11 @@ export default function FundsPage() {
             icon={<FolderIcon sx={{ fontSize: 20 }} />} 
             iconPosition="start" 
             label="我的持仓" 
+          />
+          <Tab
+            icon={<PsychologyAltIcon sx={{ fontSize: 20 }} />}
+            iconPosition="start"
+            label={t('funds.research.tab')}
           />
         </Tabs>
       </Paper>
@@ -755,6 +778,10 @@ export default function FundsPage() {
         </>
           )}
         </>
+      )}
+
+      {pageTab === 3 && (
+        <FundResearchWorkbench trackedFunds={funds} />
       )}
 
       {/* Comparison Results Dialog */}

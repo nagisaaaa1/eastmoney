@@ -364,10 +364,12 @@ async def get_recommendation_performance(
 
 @router.post("/compute-factors")
 async def trigger_factor_computation(
+    asset_type: str = "stock",
+    universe: str = "market_otc",
     current_user: User = Depends(get_current_user)
 ):
     """
-    Manually trigger factor computation for all stocks.
+    Manually trigger factor computation.
 
     This is normally run automatically at 6:00 AM.
     Admin only endpoint.
@@ -377,6 +379,7 @@ async def trigger_factor_computation(
     try:
         from src.analysis.recommendation.factor_store.daily_computer import daily_computer
         from src.data_sources.tushare_client import get_latest_trade_date
+        from src.data_sources.fund_data_provider import get_fallback_trade_date
 
         if daily_computer.is_running:
             return {
@@ -384,19 +387,33 @@ async def trigger_factor_computation(
                 "progress": daily_computer.progress
             }
 
+        if asset_type not in {"stock", "fund", "all"}:
+            raise HTTPException(status_code=400, detail="asset_type must be one of: stock, fund, all")
+
         trade_date = get_latest_trade_date()
+        if not trade_date:
+            trade_date = get_fallback_trade_date()
 
         # Start computation in background
         import threading
-        thread = threading.Thread(
-            target=daily_computer.compute_all_stock_factors,
-            args=(trade_date,)
-        )
+
+        def run_target():
+            if asset_type == "stock":
+                daily_computer.compute_all_stock_factors(trade_date)
+            elif asset_type == "fund":
+                daily_computer.compute_all_fund_factors(trade_date, universe=universe)
+            else:
+                daily_computer.compute_all_stock_factors(trade_date)
+                daily_computer.compute_all_fund_factors(trade_date, universe=universe)
+
+        thread = threading.Thread(target=run_target)
         thread.start()
 
         return {
             "status": "started",
             "trade_date": trade_date,
+            "asset_type": asset_type,
+            "universe": universe,
             "message": "Factor computation started in background"
         }
 

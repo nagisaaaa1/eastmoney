@@ -81,6 +81,7 @@ class ModelListRequest(BaseModel):
 class GenerateRequest(BaseModel):
     """Request to generate a report."""
     fund_code: Optional[str] = None
+    force: bool = False
 
 
 class CommodityAnalyzeRequest(BaseModel):

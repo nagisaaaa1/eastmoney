@@ -2776,13 +2776,17 @@ def _update_position_from_transaction(cursor, portfolio_id: int, user_id: int, t
 
 
 def delete_transaction(transaction_id: int, user_id: int) -> bool:
-    """Delete a transaction. Note: This doesn't reverse position changes."""
+    """Delete a transaction and recalculate affected position."""
     conn = get_db_connection()
     c = conn.cursor()
 
     # Verify ownership
     exists = c.execute(
-        'SELECT id FROM transactions WHERE id = ? AND user_id = ?',
+        '''
+        SELECT id, portfolio_id, asset_type, asset_code
+        FROM transactions
+        WHERE id = ? AND user_id = ?
+        ''',
         (transaction_id, user_id)
     ).fetchone()
 
@@ -2793,6 +2797,18 @@ def delete_transaction(transaction_id: int, user_id: int) -> bool:
     c.execute('DELETE FROM transactions WHERE id = ?', (transaction_id,))
     conn.commit()
     conn.close()
+
+    # Keep positions/summary in sync after deletion.
+    try:
+        recalculate_position(
+            int(exists['portfolio_id']),
+            str(exists['asset_type']),
+            str(exists['asset_code']),
+            user_id
+        )
+    except Exception as e:
+        print(f"Warning: failed to recalculate position after deleting transaction {transaction_id}: {e}")
+
     return True
 
 
@@ -3334,6 +3350,18 @@ def get_top_funds_by_score(
     ''', (trade_date, min_score, limit)).fetchall()
     conn.close()
     return [dict(r) for r in results]
+
+
+def get_latest_fund_factor_trade_date() -> Optional[str]:
+    """Get the latest trade_date available in fund factor cache."""
+    conn = get_db_connection()
+    row = conn.execute(
+        'SELECT MAX(trade_date) AS latest_date FROM fund_factors_daily'
+    ).fetchone()
+    conn.close()
+    if row and row['latest_date']:
+        return row['latest_date']
+    return None
 
 
 def delete_old_fund_factors(days_to_keep: int = 30) -> int:

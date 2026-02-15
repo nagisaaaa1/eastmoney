@@ -17,6 +17,7 @@ async def get_settings():
 
     return {
         "llm_provider": env.get("LLM_PROVIDER", "gemini"),
+        "data_source_provider": env.get("DATA_SOURCE_PROVIDER", "hybrid"),
         "gemini_api_key_masked": mask_api_key(env.get("GEMINI_API_KEY", "")),
         "openai_api_key_masked": mask_api_key(env.get("OPENAI_API_KEY", "")),
         "openai_base_url": env.get("OPENAI_BASE_URL", ""),

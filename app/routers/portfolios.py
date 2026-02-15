@@ -17,7 +17,7 @@ from app.core.dependencies import get_current_user
 from app.core.utils import sanitize_for_json
 from app.core.helpers import (
     get_fund_nav_history, get_stock_price_history, get_index_history,
-    enrich_positions_with_prices
+    enrich_positions_with_prices, get_fund_nav_on_or_before_date
 )
 from src.storage.db import (
     # Portfolio CRUD
@@ -30,7 +30,8 @@ from src.storage.db import (
     get_portfolio_positions, upsert_position, delete_unified_position,
     get_unified_position_by_id, recalculate_position, update_unified_position,
     # Transactions
-    get_portfolio_transactions, create_transaction, delete_transaction,
+    get_portfolio_transactions, create_transaction, delete_transaction, get_transaction_by_id,
+    get_user_preferences, save_user_preferences,
     # Alerts
     get_portfolio_alerts, get_unread_alert_count, mark_alert_read, dismiss_alert,
     # Snapshots & Migration
@@ -45,10 +46,12 @@ from src.analysis.portfolio import (
     SignalGenerator
 )
 from src.analysis.portfolio.stress_test import StressScenario, ScenarioType
+from src.analysis.fund_research import FundResearchService
 from src.llm.client import get_llm_client
 from src.services.assistant_service import assistant_service
 
 router = APIRouter(tags=["Portfolios"])
+_fund_research_service = FundResearchService()
 
 
 def parse_snapshot_date(date_val) -> datetime:
@@ -72,6 +75,85 @@ def normalize_date_str(date_val) -> str:
     if len(date_str) == 8 and date_str.isdigit():
         return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
     return date_str
+
+
+async def _on_fund_transaction_changed(
+    user_id: int,
+    asset_type: str,
+    asset_code: str,
+) -> None:
+    """Refresh fund decision context after transaction mutations."""
+    if str(asset_type or "").lower() != "fund":
+        return
+    if not asset_code:
+        return
+    try:
+        await asyncio.to_thread(
+            _fund_research_service.refresh_context_for_transaction_change,
+            user_id,
+            asset_code,
+        )
+    except Exception as exc:
+        print(f"Fund context refresh after transaction failed ({asset_code}): {exc}")
+
+
+def _to_float(value, default: Optional[float] = None) -> Optional[float]:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _transaction_cash_delta(tx_data: Dict) -> float:
+    """Estimate cash delta caused by one transaction."""
+    tx_type = str(tx_data.get("transaction_type", "")).lower()
+    shares = _to_float(tx_data.get("shares"), 0.0) or 0.0
+    price = _to_float(tx_data.get("price"), 0.0) or 0.0
+    fees = max(0.0, _to_float(tx_data.get("fees"), 0.0) or 0.0)
+
+    gross_amount = _to_float(tx_data.get("total_amount"))
+    if gross_amount is None:
+        gross_amount = shares * price
+    gross_amount = max(0.0, gross_amount)
+
+    cash_out = gross_amount + fees
+    cash_in = max(0.0, gross_amount - fees)
+
+    if tx_type in ("buy", "transfer_in"):
+        return -cash_out
+    if tx_type in ("sell", "transfer_out", "dividend"):
+        return cash_in
+    # split and unknown actions are treated as non-cash events
+    return 0.0
+
+
+def _update_manual_available_cash_for_transaction(
+    user_id: int,
+    tx_data: Dict,
+    *,
+    reverse: bool = False,
+) -> Optional[float]:
+    """
+    Update manual available_cash in user preferences.
+
+    If user has not set available_cash manually, no update is performed.
+    """
+    row = get_user_preferences(user_id) or {}
+    preferences = dict(row.get("preferences") or {})
+    current_cash = _to_float(preferences.get("available_cash"))
+    if current_cash is None:
+        return None
+
+    delta = _transaction_cash_delta(tx_data)
+    if reverse:
+        delta = -delta
+
+    new_cash = round(max(0.0, current_cash + delta), 2)
+    preferences["available_cash"] = new_cash
+    save_user_preferences(user_id, preferences)
+    return new_cash
 
 
 # ====================================================================
@@ -491,6 +573,28 @@ async def delete_portfolio_position(
 # Transactions API
 # ====================================================================
 
+@router.get("/api/portfolios/funds/{fund_code}/nav-at-date")
+async def get_fund_nav_at_date(
+    fund_code: str,
+    date: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Get fund NAV on or before a specified date for transaction auto-fill."""
+    try:
+        loop = asyncio.get_running_loop()
+        nav_info = await loop.run_in_executor(None, get_fund_nav_on_or_before_date, fund_code, date)
+        if not nav_info:
+            raise HTTPException(status_code=404, detail="Fund NAV not found for the specified date")
+        return nav_info
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching fund NAV for {fund_code} on {date}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/api/portfolios/{portfolio_id}/transactions")
 async def get_portfolio_transactions_api(
     portfolio_id: int,
@@ -526,8 +630,23 @@ async def create_portfolio_transaction(
         if not portfolio:
             raise HTTPException(status_code=404, detail="Portfolio not found")
 
-        transaction_id = create_transaction(transaction.dict(), portfolio_id, current_user.id)
-        return {"id": transaction_id, "message": "Transaction created successfully"}
+        tx_payload = transaction.dict()
+        transaction_id = create_transaction(tx_payload, portfolio_id, current_user.id)
+        updated_available_cash = _update_manual_available_cash_for_transaction(
+            current_user.id,
+            tx_payload,
+            reverse=False,
+        )
+        await _on_fund_transaction_changed(
+            current_user.id,
+            transaction.asset_type,
+            transaction.asset_code,
+        )
+        return {
+            "id": transaction_id,
+            "message": "Transaction created successfully",
+            "available_cash": updated_available_cash,
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
@@ -549,11 +668,29 @@ async def delete_portfolio_transaction(
         if not portfolio:
             raise HTTPException(status_code=404, detail="Portfolio not found")
 
+        tx = get_transaction_by_id(transaction_id, current_user.id)
+        if not tx:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+
         success = delete_transaction(transaction_id, current_user.id)
         if not success:
             raise HTTPException(status_code=404, detail="Transaction not found")
 
-        return {"message": "Transaction deleted successfully"}
+        updated_available_cash = _update_manual_available_cash_for_transaction(
+            current_user.id,
+            tx,
+            reverse=True,
+        )
+
+        await _on_fund_transaction_changed(
+            current_user.id,
+            tx.get("asset_type", ""),
+            tx.get("asset_code", ""),
+        )
+        return {
+            "message": "Transaction deleted successfully",
+            "available_cash": updated_available_cash,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -600,15 +737,33 @@ async def get_portfolio_summary_new(portfolio_id: int, current_user: User = Depe
         if not portfolio:
             raise HTTPException(status_code=404, detail="Portfolio not found")
 
+        preference_row = get_user_preferences(current_user.id) or {}
+        preferences = preference_row.get("preferences") or {}
+        manual_available_cash = _to_float(preferences.get("available_cash"))
+        total_capital_pref = _to_float(preferences.get("total_capital"))
+
         positions = get_portfolio_positions(portfolio_id, current_user.id)
 
         if not positions:
+            if manual_available_cash is not None:
+                available_cash = round(max(0.0, manual_available_cash), 2)
+                cash_source = "manual_preference"
+            elif total_capital_pref is not None:
+                available_cash = round(max(0.0, total_capital_pref), 2)
+                cash_source = "derived_total_capital"
+            else:
+                available_cash = None
+                cash_source = "unknown"
+
             return {
                 "portfolio": portfolio,
                 "total_value": 0,
                 "total_cost": 0,
                 "total_pnl": 0,
                 "total_pnl_pct": 0,
+                "total_assets": round((available_cash or 0.0), 2),
+                "available_cash": available_cash,
+                "cash_source": cash_source,
                 "positions_count": 0,
                 "positions": [],
                 "allocation": {"by_type": {}, "by_sector": {}},
@@ -636,12 +791,27 @@ async def get_portfolio_summary_new(portfolio_id: int, current_user: User = Depe
             allocation_by_type = {k: round(v / total_value * 100, 2) for k, v in allocation_by_type.items()}
             allocation_by_sector = {k: round(v / total_value * 100, 2) for k, v in allocation_by_sector.items()}
 
+        if manual_available_cash is not None:
+            available_cash = round(max(0.0, manual_available_cash), 2)
+            cash_source = "manual_preference"
+        elif total_capital_pref is not None:
+            available_cash = round(max(0.0, total_capital_pref - total_value), 2)
+            cash_source = "derived_total_capital"
+        else:
+            available_cash = None
+            cash_source = "unknown"
+
+        total_assets = round(total_value + (available_cash or 0.0), 2)
+
         return sanitize_for_json({
             "portfolio": portfolio,
             "total_value": round(total_value, 2),
             "total_cost": round(total_cost, 2),
             "total_pnl": round(total_pnl, 2),
             "total_pnl_pct": round(total_pnl_pct, 2),
+            "total_assets": total_assets,
+            "available_cash": available_cash,
+            "cash_source": cash_source,
             "positions_count": len(enriched_positions),
             "positions": enriched_positions,
             "allocation": {

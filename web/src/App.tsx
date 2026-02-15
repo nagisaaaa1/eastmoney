@@ -4,7 +4,6 @@ import { theme } from './theme/theme';
 import Layout from './components/layout/Layout';
 import DashboardPage from './pages/Dashboard';
 import ReportsPage from './pages/Reports';
-import FundsPage from './pages/Funds';
 import PortfolioPage from './pages/Portfolio';
 import StocksPage from './pages/Stocks';
 import SentimentPage from './pages/Sentiment';
@@ -14,6 +13,7 @@ import LoginPage from './pages/Login';
 import RecommendationsPage from './pages/Recommendations';
 import DocumentationPage from './pages/Documentation';
 import NewsPage from './pages/News';
+import FundDecisionCenterPage from './pages/FundDecisionCenter';
 import { AppContextProvider } from './contexts/AppContext';
 import { FloatingAssistant } from './components/assistant';
 
@@ -47,7 +47,9 @@ function App() {
               <Route path="/" element={<Layout />}>
                 <Route index element={<Navigate to="/dashboard" replace />} />
                 <Route path="dashboard" element={<DashboardPage />} />
-                <Route path="funds" element={<FundsPage />} />
+                <Route path="funds" element={<Navigate to="/fund-workbench?tab=universe" replace />} />
+                <Route path="fund-workbench" element={<FundDecisionCenterPage />} />
+                <Route path="fund-decision" element={<Navigate to="/fund-workbench?tab=decision" replace />} />
                 <Route path="portfolio" element={<PortfolioPage />} />
                 <Route path="stocks" element={<StocksPage />} />
                 <Route path="recommendations" element={<RecommendationsPage />} />

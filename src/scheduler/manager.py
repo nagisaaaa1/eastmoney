@@ -13,6 +13,7 @@ from src.storage.db import (
 from src.analysis.pre_market import PreMarketAnalyst
 from src.analysis.post_market import PostMarketAnalyst
 from src.analysis.dashboard import DashboardService
+from src.analysis.fund_research import FundResearchService
 from src.report_gen import save_report, save_stock_report
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ class SchedulerManager:
         self.add_dashboard_refresh_job()
         self.add_daily_snapshot_job()
         self.add_factor_computation_job()
+        self.add_daily_fund_context_refresh_job()
 
     def refresh_all_jobs(self):
         """Clear all and reload from DB (All users)"""
@@ -101,6 +103,8 @@ class SchedulerManager:
         self.add_daily_snapshot_job()
         # Re-add factor computation job
         self.add_factor_computation_job()
+        # Re-add fund context refresh job
+        self.add_daily_fund_context_refresh_job()
 
     def add_dashboard_refresh_job(self):
         """Schedule dashboard cache refresh every 5 minutes"""
@@ -154,6 +158,20 @@ class SchedulerManager:
             )
             print("Scheduled daily factor computation at 06:00")
 
+    def add_daily_fund_context_refresh_job(self):
+        """Schedule daily fund decision-context refresh after market close."""
+        job_id = "daily_fund_context_refresh"
+        if not self.scheduler.get_job(job_id):
+            self.scheduler.add_job(
+                self.run_daily_fund_context_refresh,
+                trigger=CronTrigger(hour=16, minute=5),
+                id=job_id,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
+            print("Scheduled daily fund context refresh at 16:05")
+
     def run_daily_factor_computation(self):
         """Worker to run daily factor computation for recommendation system v2"""
         # Check if today is a trading day
@@ -170,6 +188,18 @@ class SchedulerManager:
             print(f"Factor computation module not available: {e}")
         except Exception as e:
             print(f"Error running daily factor computation: {e}")
+
+    def run_daily_fund_context_refresh(self):
+        """Worker to refresh fund DCA/context snapshots and auto-review prerequisites."""
+        try:
+            service = FundResearchService()
+            result = service.run_daily_context_refresh()
+            print(
+                "Daily fund context refresh completed: "
+                f"{result.get('updated', 0)} updated, {result.get('failed', 0)} failed."
+            )
+        except Exception as e:
+            print(f"Error running daily fund context refresh: {e}")
 
     def create_all_portfolio_snapshots(self):
         """Create snapshots for all portfolios (called by scheduler)"""
@@ -363,14 +393,23 @@ class SchedulerManager:
                 self.scheduler.remove_job(job.id)
                 print(f"Removed job {job.id}")
 
-    def run_analysis_task(self, fund_code: str, mode: str, user_id: Optional[int] = None):
+    def run_analysis_task(
+        self,
+        fund_code: str,
+        mode: str,
+        user_id: Optional[int] = None,
+        force_run: bool = False,
+    ):
         """Worker function"""
         # Check if today is a trading day
-        if not trading_calendar.is_trading_day():
+        if not force_run and not trading_calendar.is_trading_day():
             print(f"Skipping {mode.upper()}-market task for fund {fund_code} - not a trading day")
             return
 
-        print(f"Executing {mode.upper()}-market task for {fund_code} (User: {user_id})...")
+        print(
+            f"Executing {mode.upper()}-market task for {fund_code} "
+            f"(User: {user_id}, force_run={force_run})..."
+        )
 
         # Re-fetch fund data. Pass user_id if we want to be strict, or None to find by code globally.
         # But wait, code might not be unique globally anymore. We MUST filter by user_id if we have it.
