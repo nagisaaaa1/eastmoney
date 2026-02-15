@@ -1,14 +1,69 @@
-/.env
-/venv
+# =========================
+# Secrets / Local Config
+# =========================
+.env
+.env.*
+!.env.example
+qwen-key.txt
+*.claude
+.agent/
+
+# =========================
+# Python
+# =========================
 __pycache__/
 **/__pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+env/
+pip-wheel-metadata/
+*.egg-info/
 
+# =========================
+# Databases / Runtime State
+# =========================
 *.db
-*.md
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+funds.db
 
-*.claude
-funds.db
-config/__pycache__/settings.cpython-311.pyc
-funds.db
-qwen-key.txt
+# =========================
+# Generated Outputs / Cache
+# =========================
+reports/**/*
+!reports/.gitkeep
+*.log
+logs/
+tmp/
+.cache/
+**/.cache/
+
+# =========================
+# Frontend
+# =========================
+web/node_modules/
+web/dist/
+web/.vite/
+web/.cache/
+
+# =========================
+# IDE / OS
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

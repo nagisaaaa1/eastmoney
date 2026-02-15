@@ -1,0 +1,35 @@
+# Qwen Quickstart (DashScope OpenAI-compatible)
+
+This project can run with Qwen through DashScope's OpenAI-compatible endpoint.
+
+## 1) Environment variables
+
+```powershell
+$env:LLM_PROVIDER="qwen"
+$env:OPENAI_API_KEY="your_dashscope_api_key"
+$env:OPENAI_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
+$env:OPENAI_MODEL="qwen-plus"
+```
+
+## 2) Start backend
+
+```powershell
+py -3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+## 3) Health check
+
+```powershell
+curl http://127.0.0.1:8000/api/health
+```
+
+Expected response:
+
+```json
+{"status":"ok","timestamp":"..."}
+```
+
+## Notes
+
+- `LLM_PROVIDER=qwen` is treated as an alias of `openai_compatible`.
+- If `OPENAI_MODEL` is not set and `LLM_PROVIDER=qwen`, the default model is `qwen-plus`.
