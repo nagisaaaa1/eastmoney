@@ -15,6 +15,9 @@ __pycache__/
 **/__pycache__/
 *.py[cod]
 *.pyo
+*.tmp
+*.bak
+*.orig
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -25,6 +28,9 @@ htmlcov/
 .venv/
 venv/
 env/
+__pypackages__/
+.ipynb_checkpoints/
+.python-version
 pip-wheel-metadata/
 *.egg-info/
 
@@ -34,10 +40,12 @@ pip-wheel-metadata/
 *.db
 *.sqlite
 *.sqlite3
+*.db.bak
 *.db-journal
 *.db-wal
 *.db-shm
 funds.db
+*.pid
 
 # =========================
 # Generated Outputs / Cache
@@ -49,6 +57,9 @@ logs/
 tmp/
 .cache/
 **/.cache/
+config/*_cache.json
+!config/funds.json
+!config/market_stocks.json
 
 # =========================
 # Frontend
@@ -57,6 +68,10 @@ web/node_modules/
 web/dist/
 web/.vite/
 web/.cache/
+web/.eslintcache
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
 # =========================
 # IDE / OS
