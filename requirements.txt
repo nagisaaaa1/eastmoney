@@ -1,6 +1,7 @@
 akshare
 tushare
 google-genai
+dashscope
 tavily-python
 python-dotenv
 pandas
