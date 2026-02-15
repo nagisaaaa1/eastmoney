@@ -11,7 +11,13 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from src.analysis.recommendation.fund_engine.engine import FundRecommendationEngine
-from src.data_sources.fund_data_provider import get_fallback_trade_date, normalize_fund_code
+from src.analysis.utils.fund_mapping import FundIndexMapper
+from src.data_sources.fund_data_provider import (
+    get_fallback_trade_date,
+    get_fund_nav_with_fallback,
+    normalize_fund_code,
+)
+from src.data_sources.index_valuation import IndexValuationSource
 from src.data_sources.tushare_client import (
     get_latest_trade_date,
     sync_fund_basic,
@@ -131,6 +137,7 @@ class FundResearchService:
     def __init__(self) -> None:
         self._factor_engine = FundRecommendationEngine()
         self._trading_day_cache: Dict[int, set] = {}
+        self._nav_percentile_cache: Dict[Tuple[str, str], Optional[float]] = {}
 
     @staticmethod
     def _confidence_band(confidence: float) -> str:
@@ -2653,6 +2660,85 @@ class FundResearchService:
             except Exception as exc:
                 print(f"factor backfill failed for {code}: {exc}")
 
+    def _compute_nav_percentile(self, fund_code: str, trade_date: Optional[str]) -> Optional[float]:
+        normalized_code = normalize_fund_code(fund_code)
+        if not normalized_code:
+            return None
+
+        trade_key = str(trade_date or self._current_trade_date()).replace("-", "").strip()
+        if len(trade_key) != 8 or not trade_key.isdigit():
+            trade_key = self._current_trade_date()
+
+        cache_key = (normalized_code, trade_key)
+        if cache_key in self._nav_percentile_cache:
+            return self._nav_percentile_cache[cache_key]
+
+        percentile: Optional[float] = None
+        try:
+            trade_dt = datetime.strptime(trade_key, "%Y%m%d")
+            start_date = (trade_dt - timedelta(days=365 * 6)).strftime("%Y%m%d")
+            nav_df = get_fund_nav_with_fallback(normalized_code, start_date, trade_key)
+
+            if nav_df is not None and not nav_df.empty:
+                nav_df = nav_df.sort_values("nav_date")
+                nav_col = "accum_nav" if "accum_nav" in nav_df.columns else "unit_nav"
+                if nav_col in nav_df.columns:
+                    values = [_safe_float(value) for value in nav_df[nav_col].tolist()]
+                    clean_values = [value for value in values if value is not None and value > 0]
+                    if len(clean_values) >= 60:
+                        history = clean_values[-(250 * 5) :]
+                        current = history[-1]
+                        percentile = float(
+                            sum(1 for value in history if value < current) / len(history)
+                        )
+                        percentile = max(0.0, min(1.0, percentile))
+        except Exception as exc:
+            print(f"nav percentile compute failed for {normalized_code}: {exc}")
+
+        self._nav_percentile_cache[cache_key] = percentile
+        return percentile
+
+    def _calculate_valuation_score_v2(
+        self, fund_info: Dict[str, Any], nav_percentile: Optional[float]
+    ) -> Tuple[float, str]:
+        """
+        Hybrid valuation score:
+        - Prefer index PE/PB percentile when mapping and data are available
+        - Fallback to NAV percentile otherwise
+        """
+        fund_name = str(fund_info.get("name") or "")
+        target_index_code = fund_info.get("mapped_index_code") or FundIndexMapper.guess_index_code(fund_name)
+        is_foreign = fund_info.get("is_foreign_index")
+        if is_foreign is None:
+            is_foreign = bool(
+                target_index_code and FundIndexMapper.is_tracking_foreign(str(target_index_code))
+            )
+
+        valuation_data = fund_info.get("valuation_data")
+        if valuation_data is None and target_index_code and not is_foreign:
+            valuation_data = IndexValuationSource.fetch_index_valuation(str(target_index_code))
+
+        if valuation_data:
+            pe_pct = _safe_float(valuation_data.get("pe_percentile"))
+            pe_value = _safe_float(valuation_data.get("pe"))
+            if pe_pct is not None:
+                score = _clamp((1 - pe_pct) * 100, 0, 100)
+                reason = (
+                    f"跟踪指数[{valuation_data.get('index_code')}]，"
+                    f"当前PE分位 {pe_pct:.1%} (PE={pe_value if pe_value is not None else 'NA'})"
+                )
+                return round(score, 2), reason
+
+        if nav_percentile is None:
+            if is_foreign:
+                return 50.0, "外盘指数暂未接入PE/PB估值，且净值历史不足，给予中性估值分"
+            return 50.0, "数据不足，给予中性估值分"
+
+        score = _clamp((1 - nav_percentile) * 100, 0, 100)
+        if is_foreign:
+            return round(score, 2), f"外盘指数暂走净值回退，基于净值历史分位 {nav_percentile:.1%}"
+        return round(score, 2), f"暂无指数估值数据，基于净值历史分位 {nav_percentile:.1%}"
+
     def _build_scorecard(self, universe_item: Dict[str, Any], factors: Dict[str, Any]) -> Dict[str, Any]:
         found_date = _parse_date(universe_item.get("found_date"))
         age_days = (datetime.now() - found_date).days if found_date else None
@@ -2718,22 +2804,29 @@ class FundResearchService:
 
         ret_1m = _safe_float(factors.get("return_1m"))
         ret_3m = _safe_float(factors.get("return_3m"))
-        valuation_base = 60.0
-        if ret_3m is not None:
-            if ret_3m <= -12:
-                valuation_base = 90.0
-            elif ret_3m <= -5:
-                valuation_base = 78.0
-            elif ret_3m >= 15:
-                valuation_base = 30.0
-            elif ret_3m >= 8:
-                valuation_base = 42.0
-        if ret_1m is not None:
-            if ret_1m <= -4:
-                valuation_base += 8
-            elif ret_1m >= 8:
-                valuation_base -= 10
-        valuation_position_score = round(_clamp(valuation_base), 2)
+
+        fund_name = str(universe_item.get("name") or "")
+        mapped_index_code = FundIndexMapper.guess_index_code(fund_name)
+        is_foreign_index = bool(
+            mapped_index_code and FundIndexMapper.is_tracking_foreign(str(mapped_index_code))
+        )
+        valuation_data = None
+        if mapped_index_code and not is_foreign_index:
+            valuation_data = IndexValuationSource.fetch_index_valuation(str(mapped_index_code))
+
+        nav_percentile = self._compute_nav_percentile(
+            universe_item.get("code") or factors.get("code") or "",
+            factors.get("trade_date"),
+        )
+        valuation_position_score, valuation_reason = self._calculate_valuation_score_v2(
+            {
+                "name": fund_name,
+                "mapped_index_code": mapped_index_code,
+                "is_foreign_index": is_foreign_index,
+                "valuation_data": valuation_data,
+            },
+            nav_percentile,
+        )
 
         total_score = round(
             quality_score * 0.40 + risk_return_score * 0.40 + valuation_position_score * 0.20,
@@ -2745,6 +2838,7 @@ class FundResearchService:
             "quality_score": quality_score,
             "risk_return_score": risk_return_score,
             "valuation_position_score": valuation_position_score,
+            "valuation_position_score_reason": valuation_reason,
             "hard_filter_pass": hard_filter_pass,
             "hard_filter_reasons": hard_filter_reasons,
             "factors": {
@@ -2759,6 +2853,15 @@ class FundResearchService:
                 "manager_tenure_years": tenure_years,
                 "fund_size": fund_size,
                 "style_consistency": style_consistency,
+                "nav_percentile": nav_percentile,
+                "mapped_index_code": mapped_index_code,
+                "is_foreign_index": is_foreign_index,
+                "index_valuation_source": valuation_data.get("source") if valuation_data else None,
+                "index_valuation_date": valuation_data.get("date") if valuation_data else None,
+                "index_pe": _safe_float(valuation_data.get("pe")) if valuation_data else None,
+                "index_pe_percentile": _safe_float(valuation_data.get("pe_percentile")) if valuation_data else None,
+                "index_pb": _safe_float(valuation_data.get("pb")) if valuation_data else None,
+                "index_pb_percentile": _safe_float(valuation_data.get("pb_percentile")) if valuation_data else None,
             },
         }
 
