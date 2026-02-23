@@ -76,6 +76,7 @@ class RecommendationEngine:
         fund_limit: int = 20,
         user_preferences: Optional[Dict[str, Any]] = None,
         trade_date: str = None,
+        explanation_mode: str = "quick",
     ) -> Dict[str, Any]:
         """
         Generate investment recommendations using quantitative models.
@@ -103,6 +104,10 @@ class RecommendationEngine:
             if not trade_date:
                 trade_date = get_fallback_trade_date()
         print(f"[EngineV2] Using trade_date: {trade_date}")
+
+        explain_mode = str(explanation_mode or "quick").strip().lower()
+        if explain_mode not in {"quick", "deep"}:
+            explain_mode = "quick"
 
         results = {
             "mode": mode,
@@ -152,8 +157,12 @@ class RecommendationEngine:
             if self.use_llm and (short_stocks or short_funds):
                 print(f"[EngineV2] Generating LLM explanations for short-term...")
                 llm_start = _time.time()
-                short_stocks = explain_recommendations_sync(short_stocks, 'stock', 'short_term')
-                short_funds = explain_recommendations_sync(short_funds, 'fund', 'short_term')
+                short_stocks = explain_recommendations_sync(
+                    short_stocks, "stock", "short_term", mode=explain_mode
+                )
+                short_funds = explain_recommendations_sync(
+                    short_funds, "fund", "short_term", mode=explain_mode
+                )
                 print(f"[EngineV2] LLM explanations took {_time.time() - llm_start:.2f}s")
 
             print(f"[EngineV2] Building short_term results dict...")
@@ -197,8 +206,12 @@ class RecommendationEngine:
             if self.use_llm and (long_stocks or long_funds):
                 print(f"[EngineV2] Generating LLM explanations for long-term...")
                 llm_start = _time.time()
-                long_stocks = explain_recommendations_sync(long_stocks, 'stock', 'long_term')
-                long_funds = explain_recommendations_sync(long_funds, 'fund', 'long_term')
+                long_stocks = explain_recommendations_sync(
+                    long_stocks, "stock", "long_term", mode=explain_mode
+                )
+                long_funds = explain_recommendations_sync(
+                    long_funds, "fund", "long_term", mode=explain_mode
+                )
                 print(f"[EngineV2] LLM explanations took {_time.time() - llm_start:.2f}s")
 
             print(f"[EngineV2] Building long_term results dict...")

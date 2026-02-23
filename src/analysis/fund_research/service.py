@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from src.analysis.recommendation.fund_engine.engine import FundRecommendationEngine
+from src.analysis.recommendation.llm_synthesis.explainer import RecommendationExplainer
 from src.analysis.utils.fund_mapping import FundIndexMapper
 from src.data_sources.fund_data_provider import (
     get_fallback_trade_date,
@@ -133,11 +134,14 @@ class FundResearchService:
     MIN_FOUND_DAYS = 180
     MIN_FUND_SIZE_BN = 0.5
     MAX_DRAWDOWN_ALLOWED = 45.0
+    RELATIVE_DRAWDOWN_MULTIPLIER = 1.2
+    FALLBACK_MAX_DRAWDOWN = 60.0
 
     def __init__(self) -> None:
         self._factor_engine = FundRecommendationEngine()
         self._trading_day_cache: Dict[int, set] = {}
         self._nav_percentile_cache: Dict[Tuple[str, str], Optional[float]] = {}
+        self._index_drawdown_cache: Dict[Tuple[str, str], Optional[float]] = {}
 
     @staticmethod
     def _confidence_band(confidence: float) -> str:
@@ -1486,6 +1490,11 @@ class FundResearchService:
             },
             "generated_at": datetime.now().isoformat(),
         }
+        decision["quick_comment"] = RecommendationExplainer.generate_template_comment(
+            scorecard.get("factors") or {},
+            strategy="long_term",
+            asset_type="fund",
+        )
         if mode == "deep":
             decision["deep_analysis"] = self._run_deep_debate_with_llm(
                 code=normalized_code,
@@ -1640,6 +1649,10 @@ class FundResearchService:
         analysis_mode: str = "deep",
     ) -> Dict[str, Any]:
         """AI-heavy selection system for candidate pool."""
+        mode = str(analysis_mode or "quick").strip().lower()
+        if mode not in {"quick", "deep"}:
+            mode = "quick"
+
         scored = self.score_funds(
             user_id,
             codes=None,
@@ -1655,6 +1668,7 @@ class FundResearchService:
                 "candidate_count": 0,
                 "selected_count": 0,
                 "selected": [],
+                "analysis_mode": mode,
                 "debate": {
                     "engine": "rule_fallback",
                     "roles": [],
@@ -1687,11 +1701,13 @@ class FundResearchService:
             "avg_drawdown_1y_top30": _avg_factor("max_drawdown_1y"),
         }
 
-        debate = self._build_selection_debate(
-            candidates=ranked,
-            market_context=market_context,
-            top_n=top_n,
-        )
+        debate = None
+        if mode == "deep":
+            debate = self._build_selection_debate(
+                candidates=ranked,
+                market_context=market_context,
+                top_n=top_n,
+            )
 
         selected_rows: List[Dict[str, Any]] = []
         for idx, row in enumerate(selected, start=1):
@@ -1709,6 +1725,11 @@ class FundResearchService:
                     "return_3m": factors.get("return_3m"),
                     "sharpe_1y": factors.get("sharpe_1y"),
                     "max_drawdown_1y": factors.get("max_drawdown_1y"),
+                    "quick_comment": RecommendationExplainer.generate_template_comment(
+                        factors,
+                        strategy="long_term",
+                        asset_type="fund",
+                    ),
                 }
             )
 
@@ -1718,7 +1739,8 @@ class FundResearchService:
             "selected_count": len(selected_rows),
             "selected": selected_rows,
             "market_context": market_context,
-            "debate": debate if str(analysis_mode or "deep").lower() == "deep" else None,
+            "analysis_mode": mode,
+            "debate": debate,
         }
 
     def suggest_personal_constraints(
@@ -2698,6 +2720,103 @@ class FundResearchService:
         self._nav_percentile_cache[cache_key] = percentile
         return percentile
 
+    def _normalize_trade_key(self, trade_date: Optional[str]) -> str:
+        raw = str(trade_date or self._current_trade_date()).replace("-", "").strip()
+        if len(raw) == 8 and raw.isdigit():
+            return raw
+        return self._current_trade_date()
+
+    def _compute_index_max_drawdown_1y(
+        self,
+        index_code: str,
+        trade_date: Optional[str],
+    ) -> Optional[float]:
+        code = str(index_code or "").split(".")[0].strip()
+        if not code or not code.isdigit():
+            return None
+        if FundIndexMapper.is_tracking_foreign(code):
+            return None
+
+        trade_key = self._normalize_trade_key(trade_date)
+        cache_key = (code, trade_key)
+        if cache_key in self._index_drawdown_cache:
+            return self._index_drawdown_cache[cache_key]
+
+        drawdown_value: Optional[float] = None
+        try:
+            trade_dt = datetime.strptime(trade_key, "%Y%m%d")
+            start_date = (trade_dt - timedelta(days=400)).strftime("%Y%m%d")
+            end_date = trade_dt.strftime("%Y%m%d")
+
+            import akshare as ak
+            import pandas as pd
+
+            symbol_candidates = [f"csi{code}", f"sh{code}", f"sz{code}"]
+            if code.startswith("399"):
+                symbol_candidates = [f"sz{code}", f"csi{code}", f"sh{code}"]
+
+            for symbol in symbol_candidates:
+                df = None
+                try:
+                    df = ak.stock_zh_index_daily_em(
+                        symbol=symbol,
+                        start_date=start_date,
+                        end_date=end_date,
+                    )
+                except Exception:
+                    continue
+
+                if df is None or df.empty:
+                    continue
+
+                close_col = None
+                for candidate in ("close", "Close"):
+                    if candidate in df.columns:
+                        close_col = candidate
+                        break
+                if not close_col:
+                    continue
+
+                closes = pd.to_numeric(df[close_col], errors="coerce").dropna()
+                if closes.empty:
+                    continue
+
+                running_max = closes.cummax()
+                drawdowns = (running_max - closes) / running_max * 100
+                if drawdowns.empty:
+                    continue
+
+                drawdown_value = round(float(drawdowns.max()), 2)
+                break
+        except Exception as exc:
+            print(f"index max drawdown fetch failed for {code}: {exc}")
+
+        self._index_drawdown_cache[cache_key] = drawdown_value
+        return drawdown_value
+
+    def _resolve_max_drawdown_threshold(
+        self,
+        universe_item: Dict[str, Any],
+        factors: Dict[str, Any],
+    ) -> Tuple[float, Optional[float], Optional[str], str]:
+        """
+        Resolve hard-filter drawdown threshold.
+
+        Returns:
+            threshold, index_drawdown, mapped_index_code, mode(relative|fallback)
+        """
+        fund_name = str(universe_item.get("name") or "")
+        mapped_index_code = FundIndexMapper.guess_index_code(fund_name)
+        trade_date = factors.get("trade_date")
+
+        if mapped_index_code and not FundIndexMapper.is_tracking_foreign(mapped_index_code):
+            index_dd = self._compute_index_max_drawdown_1y(mapped_index_code, trade_date)
+            if index_dd is not None and index_dd > 0:
+                threshold = round(max(10.0, min(95.0, index_dd * self.RELATIVE_DRAWDOWN_MULTIPLIER)), 2)
+                return threshold, index_dd, mapped_index_code, "relative"
+
+        return self.FALLBACK_MAX_DRAWDOWN, None, mapped_index_code, "fallback"
+
     def _calculate_valuation_score_v2(
         self, fund_info: Dict[str, Any], nav_percentile: Optional[float]
     ) -> Tuple[float, str]:
@@ -2748,6 +2867,9 @@ class FundResearchService:
         sharpe_1y = _safe_float(factors.get("sharpe_1y"))
         volatility_60d = _safe_float(factors.get("volatility_60d"))
         return_1y = _safe_float(factors.get("return_1y"))
+        drawdown_threshold, index_drawdown_1y, mapped_index_for_filter, drawdown_filter_mode = (
+            self._resolve_max_drawdown_threshold(universe_item, factors)
+        )
 
         hard_filter_reasons: List[str] = []
         if not universe_item.get("is_index_fund"):
@@ -2758,8 +2880,15 @@ class FundResearchService:
             hard_filter_reasons.append(f"fund_too_new_lt_{self.MIN_FOUND_DAYS}d")
         if fund_size is not None and fund_size < self.MIN_FUND_SIZE_BN:
             hard_filter_reasons.append(f"fund_size_lt_{self.MIN_FUND_SIZE_BN}bn")
-        if max_dd is not None and max_dd > self.MAX_DRAWDOWN_ALLOWED:
-            hard_filter_reasons.append(f"max_drawdown_gt_{self.MAX_DRAWDOWN_ALLOWED}%")
+        if max_dd is not None and max_dd > drawdown_threshold:
+            if drawdown_filter_mode == "relative" and index_drawdown_1y is not None:
+                hard_filter_reasons.append(
+                    f"max_drawdown_gt_relative_threshold_{drawdown_threshold:.1f}%_index_{index_drawdown_1y:.1f}%"
+                )
+            else:
+                hard_filter_reasons.append(
+                    f"max_drawdown_gt_fallback_threshold_{drawdown_threshold:.1f}%"
+                )
         if not factors:
             hard_filter_reasons.append("missing_factor_data")
 
@@ -2862,6 +2991,10 @@ class FundResearchService:
                 "index_pe_percentile": _safe_float(valuation_data.get("pe_percentile")) if valuation_data else None,
                 "index_pb": _safe_float(valuation_data.get("pb")) if valuation_data else None,
                 "index_pb_percentile": _safe_float(valuation_data.get("pb_percentile")) if valuation_data else None,
+                "drawdown_threshold_used": drawdown_threshold,
+                "index_drawdown_1y": index_drawdown_1y,
+                "drawdown_filter_mode": drawdown_filter_mode,
+                "mapped_index_for_filter": mapped_index_for_filter,
             },
         }
 

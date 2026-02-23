@@ -19,6 +19,7 @@ class RecommendationRequest(BaseModel):
     stock_limit: int = 20
     fund_limit: int = 20
     use_explanations: bool = True
+    explanation_mode: str = "quick"  # "quick" or "deep"
 
 
 @router.post("/generate")
@@ -43,6 +44,7 @@ async def generate_recommendations(
     stock_limit = request.stock_limit if request else 20
     fund_limit = request.fund_limit if request else 20
     use_explanations = request.use_explanations if request else True
+    explanation_mode = request.explanation_mode if request else "quick"
 
     if mode not in ["short", "long", "all"]:
         raise HTTPException(status_code=400, detail="Invalid mode. Use 'short', 'long', or 'all'.")
@@ -67,7 +69,8 @@ async def generate_recommendations(
                 mode=mode,
                 stock_limit=stock_limit,
                 fund_limit=fund_limit,
-                user_preferences=user_preferences
+                user_preferences=user_preferences,
+                explanation_mode=explanation_mode,
             )
 
         # Run engine in thread pool to avoid blocking event loop
