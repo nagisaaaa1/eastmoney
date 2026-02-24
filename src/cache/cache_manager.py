@@ -205,15 +205,15 @@ class CacheManager:
                 self._backend = RedisCache(self._redis_url)
                 # Test connection
                 self._backend._client.ping()
-                print(f"✓ Cache: Using Redis ({self._redis_url[:30]}...)")
+                print(f"[OK] Cache: Using Redis ({self._redis_url[:30]}...)")
             except Exception as e:
-                print(f"✗ Redis connection failed: {e}, falling back to in-memory cache")
+                print(f"[WARN] Redis connection failed: {e}, falling back to in-memory cache")
                 self._backend = InMemoryCache()
         else:
             if not REDIS_AVAILABLE and self._redis_url:
-                print("✗ Redis package not installed, using in-memory cache")
+                print("[WARN] Redis package not installed, using in-memory cache")
             else:
-                print("✓ Cache: Using in-memory cache (no Redis URL configured)")
+                print("[OK] Cache: Using in-memory cache (no Redis URL configured)")
             self._backend = InMemoryCache()
 
         self._initialized = True

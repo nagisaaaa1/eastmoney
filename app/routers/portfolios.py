@@ -177,7 +177,7 @@ async def get_legacy_positions(current_user: User = Depends(get_current_user)):
                 nav_history = await loop.run_in_executor(None, get_fund_nav_history, fund_code, 5)
                 if nav_history:
                     current_nav = float(nav_history[-1]['value'])
-            except:
+            except Exception:
                 pass
 
             shares = float(pos.get('shares', 0))
@@ -281,7 +281,7 @@ async def get_legacy_portfolio_summary(current_user: User = Depends(get_current_
                     nav_history = await loop.run_in_executor(None, get_fund_nav_history, fund_code, 5)
                     if nav_history:
                         fund_nav_map[fund_code] = float(nav_history[-1]['value'])
-                except:
+                except Exception:
                     pass
 
         analyzer = PortfolioAnalyzer()
@@ -324,7 +324,7 @@ async def get_legacy_portfolio_overlap(current_user: User = Depends(get_current_
                     fund_nav_map[fund_code] = current_nav
                 else:
                     current_nav = cost_basis
-            except:
+            except Exception:
                 current_nav = cost_basis
 
             position_value = shares * current_nav
@@ -338,7 +338,7 @@ async def get_legacy_portfolio_overlap(current_user: User = Depends(get_current_
                 holdings = await loop.run_in_executor(None, get_fund_holdings_list, fund_code)
                 if holdings:
                     fund_holdings[fund_code] = holdings
-            except:
+            except Exception:
                 pass
 
         if not fund_holdings:
@@ -923,7 +923,7 @@ async def get_portfolio_benchmark_comparison(
         loop = asyncio.get_running_loop()
         try:
             benchmark_history = await loop.run_in_executor(None, get_index_history, benchmark_code, days)
-        except:
+        except Exception:
             benchmark_history = []
 
         snapshots = get_portfolio_snapshots(portfolio_id, limit=days)
@@ -1685,7 +1685,7 @@ async def get_portfolio_risk_summary(portfolio_id: int, current_user: User = Dep
         try:
             benchmark_history = await loop.run_in_executor(None, get_index_history, benchmark_code, 90)
             benchmark_history = [{'date': h['date'], 'price': h['close']} for h in benchmark_history] if benchmark_history else []
-        except:
+        except Exception:
             benchmark_history = []
 
         calculator = PortfolioRiskMetrics()
@@ -2308,7 +2308,7 @@ async def explain_daily_returns(
                         f"市场：上证{sh_idx['change_pct']:.2f}%，深证{sz_idx['change_pct']:.2f}%。"
                         if sh_idx and sz_idx else ""
                     )
-            except:
+            except Exception:
                 pass
 
         prompt = (

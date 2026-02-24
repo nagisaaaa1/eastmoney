@@ -69,7 +69,7 @@ async def compare_funds(codes: List[str], current_user: User = Depends(get_curre
                         if not fund_row.empty:
                             rank_data = fund_row.iloc[0]
                             break
-                    except:
+                    except Exception:
                         continue
 
                 if rank_data is not None:
@@ -85,7 +85,7 @@ async def compare_funds(codes: List[str], current_user: User = Depends(get_curre
                         "return_1y": rank_data.get('近1年'),
                         "return_3y": rank_data.get('近3年'),
                     })
-            except:
+            except Exception:
                 continue
 
         if not comparisons:

@@ -910,7 +910,7 @@ def _calculate_stock_diagnosis_scores(quote, financial_data, quant_data):
                 elif pe_val >= 40:
                     scores['valuation'] = 8
                     scores['recommendations'].append("PE较高，估值偏贵")
-            except:
+            except (ValueError, TypeError):
                 pass
 
     # Momentum score based on return
@@ -938,7 +938,7 @@ def _calculate_stock_diagnosis_scores(quote, financial_data, quant_data):
                     scores['capital'] = 13
                 else:
                     scores['capital'] = 10
-            except:
+            except (ValueError, TypeError):
                 pass
 
     scores['total'] = sum([
@@ -1020,7 +1020,7 @@ async def get_batch_stock_quotes(codes: str, current_user: User = Depends(get_cu
                 quote = await asyncio.to_thread(get_stock_realtime_quote, code)
                 if quote:
                     results.append(quote)
-            except:
+            except Exception:
                 pass
 
         return sanitize_data({"quotes": results})

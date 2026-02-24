@@ -55,7 +55,7 @@ async def generate_report_endpoint(
                         force_run=force_run,
                     )
                     results.append(fund['code'])
-                except:
+                except Exception:
                     pass
             return {
                 "status": "success",

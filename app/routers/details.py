@@ -32,7 +32,7 @@ async def get_stock_details(code: str, current_user: User = Depends(get_current_
                 history = hist_df.to_dict('records')
             else:
                 history = []
-        except:
+        except Exception:
             history = []
 
         # Get financial indicators
@@ -42,7 +42,7 @@ async def get_stock_details(code: str, current_user: User = Depends(get_current_
                 financial_data = financial_df.iloc[0].to_dict()
             else:
                 financial_data = {}
-        except:
+        except Exception:
             financial_data = {}
 
         return {
@@ -73,7 +73,7 @@ async def get_fund_details(code: str, current_user: User = Depends(get_current_u
         try:
             info_df = ak.fund_individual_basic_info_xq(symbol=code)
             basic_info = info_df.to_dict() if not info_df.empty else {}
-        except:
+        except Exception:
             basic_info = {}
 
         # Get fund NAV history
@@ -84,14 +84,14 @@ async def get_fund_details(code: str, current_user: User = Depends(get_current_u
                 nav_history = nav_df.to_dict('records')
             else:
                 nav_history = []
-        except:
+        except Exception:
             nav_history = []
 
         # Get fund manager info
         try:
             manager_df = ak.fund_manager_em(fund=code)
             manager_info = manager_df.to_dict('records') if not manager_df.empty else []
-        except:
+        except Exception:
             manager_info = []
 
         # Get holdings info
@@ -101,7 +101,7 @@ async def get_fund_details(code: str, current_user: User = Depends(get_current_u
                 holdings = holdings_df.head(10).to_dict('records')
             else:
                 holdings = []
-        except:
+        except Exception:
             holdings = []
 
         return {

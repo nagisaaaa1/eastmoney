@@ -246,7 +246,7 @@ async def get_stock_details_endpoint(code: str):
                     "pe": info_map.get("市盈率", ""),
                     "pb": info_map.get("市净率", "")
                 }
-        except:
+        except Exception:
             pass
 
         return sanitize_data({
@@ -318,7 +318,7 @@ async def get_fund_market_details(code: str):
 
                     if nav_col:
                         info_dict["nav"] = str(latest_row[nav_col])
-            except:
+            except Exception:
                 pass
 
         perf_list = []
@@ -331,7 +331,7 @@ async def get_fund_market_details(code: str):
                         "收益率": row.get("本产品区间收益", 0.0),
                         "同类排名": row.get("周期收益同类排名", "---")
                     })
-        except:
+        except Exception:
             pass
 
         portfolio = []
@@ -339,7 +339,7 @@ async def get_fund_market_details(code: str):
             df_hold = ak.fund_portfolio_hold_em(symbol=code)
             if df_hold is not None and not df_hold.empty:
                 portfolio = df_hold.head(10).to_dict(orient='records')
-        except:
+        except Exception:
             pass
 
         return sanitize_data({

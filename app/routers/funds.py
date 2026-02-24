@@ -32,7 +32,7 @@ async def get_funds_endpoint(current_user: User = Depends(get_current_user)):
             if isinstance(item.get('focus'), str):
                 try:
                     item['focus'] = json.loads(item['focus'])
-                except:
+                except (ValueError, json.JSONDecodeError):
                     item['focus'] = []
 
             result.append(FundItem(
@@ -260,7 +260,7 @@ def _safe_float(val, default=0.0):
         if val is None or (isinstance(val, float) and pd.isna(val)):
             return default
         return float(val)
-    except:
+    except (ValueError, TypeError):
         return default
 
 
@@ -270,7 +270,7 @@ def _safe_str(val, default=""):
         if val is None or (isinstance(val, float) and pd.isna(val)):
             return default
         return str(val)
-    except:
+    except (ValueError, TypeError):
         return default
 
 
@@ -1222,7 +1222,7 @@ async def get_fund_full_detail(
                                     start = datetime.strptime(begin_date, '%Y%m%d')
                                     end = datetime.now() if not end_date else datetime.strptime(end_date, '%Y%m%d')
                                     tenure_days = (end - start).days
-                                except:
+                                except (ValueError, TypeError):
                                     pass
                             
                             # Format dates for display

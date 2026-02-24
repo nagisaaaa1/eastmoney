@@ -59,7 +59,7 @@ async def generate_recommendations(
             prefs_data = get_user_preferences(current_user.id)
             if prefs_data and prefs_data.get('preferences'):
                 user_preferences = prefs_data.get('preferences')
-        except:
+        except Exception:
             pass
 
         # Define synchronous engine work

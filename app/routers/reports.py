@@ -26,7 +26,7 @@ async def list_reports(current_user: User = Depends(get_current_user)):
         funds = get_all_funds(user_id=current_user.id)
         for f in funds:
             fund_map[f['code']] = f['name']
-    except:
+    except Exception:
         pass
 
     reports = []

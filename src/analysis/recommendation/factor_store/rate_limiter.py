@@ -26,10 +26,10 @@ class TuShareRateLimiter:
 
     # Predefined tier configurations based on TuShare points
     TIER_CONFIGS = {
-        120: {'calls_per_minute': 50, 'name': '基础版'},
-        2000: {'calls_per_minute': 200, 'name': '标准版'},
-        5000: {'calls_per_minute': 500, 'name': '高级版'},
-        10000: {'calls_per_minute': 1000, 'name': '专业版'},
+        120: {'calls_per_minute': 50, 'name': 'Basic'},
+        2000: {'calls_per_minute': 200, 'name': 'Standard'},
+        5000: {'calls_per_minute': 500, 'name': 'Advanced'},
+        10000: {'calls_per_minute': 1000, 'name': 'Professional'},
     }
 
     # Per-interface special limits (lower than tier limit)
